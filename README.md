@@ -56,7 +56,23 @@ interface AgentChangeNote {
 }
 ```
 
-### Recording Notes from Coding Agents
+### Automatic Note Recording in Pi (`pi-package`)
+
+This repository is also a **Pi package** (`extensions/herdr-git-notes/index.ts`). Installing it registers:
+- **`record_change_note` tool** (callable directly and via `tools.record_change_note` in `codemode`) with single or batched `notes: [...]` support and automatic `git diff -U1` hunk capture.
+- **`before_agent_start` + `agent_before_settle` coverage guard**: instructs Pi to record 1-line summaries on repository edits and nudges once before settling if tracked/unignored repository files were modified without notes.
+- **`/git-notes [list|prune|clear]`** slash command inside Pi.
+
+```sh
+# Local development (loads live from repo; run /reload in active Pi sessions)
+pi install C:/Users/bryan.petzinger/workspace/herdr-git-status
+
+# From GitHub or npm once published
+pi install git:github.com/<owner>/herdr-git-status
+pi install npm:herdr-git-status
+```
+
+### Recording Notes from Other CLI Agents
 
 ```sh
 # Append a note and automatically capture the current git diff hunk for that file

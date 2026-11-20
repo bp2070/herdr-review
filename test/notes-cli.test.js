@@ -23,7 +23,7 @@ test("herdr-git-note CLI stores discrete notes in <git-dir>/herdr-agent-notes.js
     await fs.mkdir(path.join(mainRepo, "src"), { recursive: true });
     await fs.writeFile(path.join(mainRepo, "src", "poller.ts"), "export const delay = 1000;\n", "utf8");
     execFileSync("git", ["add", "."], { cwd: mainRepo });
-    execFileSync("git", ["commit", "-m", "init"], { cwd: mainRepo });
+    execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "init"], { cwd: mainRepo });
 
     // Modify file in main repo and record note with --auto-hunk
     await fs.writeFile(path.join(mainRepo, "src", "poller.ts"), "export const delay = calcJitter(200);\n", "utf8");

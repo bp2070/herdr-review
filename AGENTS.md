@@ -7,6 +7,7 @@ This repository packages the **Herdr Git Status & Agent Notes** mod (`git-status
 Installed into Herdr via:
 - Directory junction: `~/.config/herdr-app/mods/git-status -> <repository>/mods/git-status`
 - Global toggle shortcut in `~/.config/herdr-app/keys.json`: `"alt-shift-g": "mod.open:git-status"`
+- Pi package registration in `~/.pi/agent/settings.json`: `pi install <repository>`
 
 ## Repository layout
 
@@ -14,6 +15,7 @@ Installed into Herdr via:
 - `mods/git-status/model.js` — Pure Git porcelain/numstat/diff parsers, `AgentChangeNote` store helpers, workspace CWD resolution, filtering, and Catppuccin Mocha palette helpers. Keep free of GPUI, Herdr, and Node imports.
 - `mods/git-status/mod.json` — Mod registration (`place: "none"`, `focusable: true`, popup toggle runner spec).
 - `mods/git-status/*.svg` — Self-contained vector icons tinted by GPUI.
+- `extensions/herdr-git-notes/index.ts` — Pi extension registering `record_change_note`, `/git-notes`, and an `agent_before_settle` coverage guard for modified repository files.
 - `src/notes-store.js` — Atomic Node/worktree-aware file store reading and writing `<git-dir>/herdr-agent-notes.json`.
 - `bin/herdr-git-note.mjs` — CLI for coding agents (`pi`, `claude`, `codex`, subagents) to append, list, remove, and prune discrete file change notes.
 - `keys.json` — Default shortcut mapping (`alt-shift-g`).

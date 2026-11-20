@@ -7,6 +7,7 @@ import {
   NOTES_FILENAME,
   GIT_READ_ARGS,
   appendNoteToDocument,
+  buildUntrackedDiffLines,
   clearNotesInDocument,
   normalizeRepoPath,
   parseNotesDocument,
@@ -76,6 +77,22 @@ export function captureAutoDiffHunk(repoRoot, repoRelativePath) {
       }
     } catch {
       // Ignore diff capture errors
+    }
+  }
+  // Fallback for untracked new files: preview initial lines
+  try {
+    execFileSync("git", [...GIT_READ_ARGS, "ls-files", "--error-unmatch", "--", repoRelativePath], {
+      cwd: repoRoot,
+      stdio: ["ignore", "ignore", "ignore"],
+    });
+  } catch {
+    try {
+      const text = fsSync.readFileSync(path.join(repoRoot, repoRelativePath), "utf8");
+      if (!text.includes("\0")) {
+        return buildUntrackedDiffLines(text, 25).join("\n");
+      }
+    } catch {
+      // Ignore unreadable file
     }
   }
   return "";
