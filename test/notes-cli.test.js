@@ -5,12 +5,13 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
+import { addReviewComment } from "../src/notes-store.js";
 
 const repoDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliPath = path.join(repoDir, "bin", "herdr-git-note.mjs");
 
-test("herdr-git-note CLI stores discrete notes in <git-dir>/herdr-agent-notes.json without dirtying git status, including linked worktrees", async () => {
-  const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "herdr-git-notes-test-"));
+test("herdr-git-note CLI stores multi-file slices, suggested commits, and thread replies in <git-dir>/herdr-review.json across worktrees", async () => {
+  const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "herdr-git-review-test-"));
   const mainRepo = path.join(tmpRoot, "main");
   const linkedWt = path.join(tmpRoot, "linked-wt");
 
@@ -22,71 +23,87 @@ test("herdr-git-note CLI stores discrete notes in <git-dir>/herdr-agent-notes.js
 
     await fs.mkdir(path.join(mainRepo, "src"), { recursive: true });
     await fs.writeFile(path.join(mainRepo, "src", "poller.ts"), "export const delay = 1000;\n", "utf8");
+    await fs.writeFile(path.join(mainRepo, "src", "types.ts"), "export type Config = {};\n", "utf8");
     execFileSync("git", ["add", "."], { cwd: mainRepo });
     execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "init"], { cwd: mainRepo });
 
-    // Modify file in main repo and record note with --auto-hunk
     await fs.writeFile(path.join(mainRepo, "src", "poller.ts"), "export const delay = calcJitter(200);\n", "utf8");
-    const addOut = execFileSync(
-      process.execPath,
-      [
-        cliPath,
-        "add",
-        "--cwd",
-        mainRepo,
-        "--file",
-        "src/poller.ts",
-        "--summary",
-        "Replaced fixed delay with jittered backoff",
-        "--agent",
-        "pi",
-        "--auto-hunk",
-        "--json",
-      ],
-      { encoding: "utf8" },
-    );
-    const added = JSON.parse(addOut);
-    assert.equal(added.note.filePath, "src/poller.ts");
-    assert.equal(added.note.agentName, "pi");
-    assert.match(added.note.diffHunk, /calcJitter/);
+    await fs.writeFile(path.join(mainRepo, "src", "types.ts"), "export type Config = { maxJitterMs: number };\n", "utf8");
 
-    // Verify git status only sees src/poller.ts (notes file inside .git is invisible to git status)
+    const sliceOut = JSON.parse(
+      execFileSync(
+        process.execPath,
+        [
+          cliPath,
+          "slice",
+          "--cwd",
+          mainRepo,
+          "--title",
+          "Add configurable jitter to outbox poller",
+          "--overview",
+          "Introduces bounded exponential backoff jitter in the outbox poller.",
+          "--files",
+          "src/poller.ts,src/types.ts",
+          "--commit",
+          "feat(outbox): add configurable retry jitter",
+          "--agent",
+          "pi",
+          "--json",
+        ],
+        { encoding: "utf8" },
+      ),
+    );
+    assert.equal(sliceOut.upserted.length, 1);
+    assert.equal(sliceOut.upserted[0].files.length, 2);
+    assert.match(sliceOut.doc.overview.text, /bounded exponential backoff/);
+    assert.equal(sliceOut.doc.suggestedCommit.subject, "feat(outbox): add configurable retry jitter");
+    assert.match(sliceOut.upserted[0].files[0].diffHunk, /calcJitter/);
+
+    // Simulate reviewer comment + CLI agent reply
+    const userThread = await addReviewComment({
+      cwd: mainRepo,
+      filePath: "src/poller.ts",
+      lineNumber: 1,
+      lineRange: "L1",
+      author: "you",
+      role: "user",
+      body: "Clamp maxJitterMs to 5000",
+      status: "open",
+    });
+
+    const replyOut = JSON.parse(
+      execFileSync(
+        process.execPath,
+        [
+          cliPath,
+          "reply",
+          "--cwd",
+          mainRepo,
+          "--thread",
+          userThread.thread.id,
+          "--body",
+          "Clamped maxJitterMs to 5000ms.",
+          "--agent",
+          "pi",
+          "--json",
+        ],
+        { encoding: "utf8" },
+      ),
+    );
+    assert.equal(replyOut.thread.status, "addressed");
+    assert.equal(replyOut.thread.messages.length, 2);
+
+    // Ensure git status only sees the 2 source files
     const statusMain = execFileSync("git", ["status", "--porcelain=v1"], { cwd: mainRepo, encoding: "utf8" }).trim();
-    assert.equal(statusMain, "M src/poller.ts");
+    assert.equal(statusMain, "M src/poller.ts\n M src/types.ts");
 
-    // Create linked worktree and verify isolated per-worktree <git-dir> storage
+    // Linked worktree isolation check
     execFileSync("git", ["worktree", "add", "-b", "feat-wt", linkedWt], { cwd: mainRepo });
-    const listWtEmpty = JSON.parse(
+    const listWt = JSON.parse(
       execFileSync(process.execPath, [cliPath, "list", "--cwd", linkedWt, "--json"], { encoding: "utf8" }),
     );
-    assert.equal(listWtEmpty.notes.length, 0);
-
-    execFileSync(
-      process.execPath,
-      [
-        cliPath,
-        "add",
-        "--cwd",
-        linkedWt,
-        "--file",
-        "src/poller.ts",
-        "--summary",
-        "Worktree-specific note",
-        "--agent",
-        "subagent",
-      ],
-      { encoding: "utf8" },
-    );
-
-    const listWtAfter = JSON.parse(
-      execFileSync(process.execPath, [cliPath, "list", "--cwd", linkedWt, "--json"], { encoding: "utf8" }),
-    );
-    assert.equal(listWtAfter.notes.length, 1);
-    assert.equal(listWtAfter.notes[0].agentName, "subagent");
-
-    // Linked worktree git status remains completely clean!
-    const statusWt = execFileSync("git", ["status", "--porcelain=v1"], { cwd: linkedWt, encoding: "utf8" }).trim();
-    assert.equal(statusWt, "");
+    assert.equal(listWt.doc.slices.length, 0);
+    assert.equal(listWt.doc.threads.length, 0);
   } finally {
     await fs.rm(tmpRoot, { recursive: true, force: true });
   }

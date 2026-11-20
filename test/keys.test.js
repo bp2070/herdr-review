@@ -6,11 +6,11 @@ import { fileURLToPath } from "node:url";
 
 const repoDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
-test("mod.json, keys.json, and package.json follow Herdr and Pi package contracts", async () => {
+test("mod.json, keys.json, and package.json follow Herdr Git Review and Pi package contracts", async () => {
   const modJson = JSON.parse(await fs.readFile(path.join(repoDir, "mods", "git-status", "mod.json"), "utf8"));
   assert.equal(modJson.place, "none");
   assert.equal(modJson.focusable, true);
-  assert.equal(modJson.title, "Git Changes & Notes");
+  assert.equal(modJson.title, "Git Review");
   assert.equal(modJson.overlay?.kind, "popup");
 
   const keysJson = JSON.parse(await fs.readFile(path.join(repoDir, "keys.json"), "utf8"));
@@ -25,6 +25,7 @@ test("mod.json, keys.json, and package.json follow Herdr and Pi package contract
     path.join(repoDir, "extensions", "herdr-git-notes", "index.ts"),
     "utf8",
   );
-  assert.ok(extSource.includes('name: "record_change_note"'));
-  assert.ok(extSource.includes('registerCommand("git-notes"'));
+  assert.ok(extSource.includes('name: "record_change_slices"'));
+  assert.ok(extSource.includes('name: "review_threads"'));
+  assert.ok(extSource.includes('registerCommand("git-review"'));
 });

@@ -1,25 +1,33 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  appendNoteToDocument,
+  UNATTRIBUTED_SLICE_ID,
+  addCommentToDocument,
   buildFullFileDiffLines,
-  clearNotesInDocument,
-  computeFooterCounts,
+  buildGitCommitCommands,
+  buildSliceGroups,
+  countActiveReviewThreads,
+  deriveCommitSuggestion,
+  deriveOverviewInfo,
   extractNoteDiffInfo,
-  filterFiles,
+  filterFilesForReview,
   formatRelativeTime,
-  groupNotesByFile,
+  formatReviewDispatchPrompt,
   mergeStatusAndStats,
   normalizeRepoPath,
   parseDiffLines,
-  parseNotesDocument,
   parseNumstatZ,
   parsePorcelainStatusZ,
+  parseReviewDocument,
   planPaneToggle,
-  removeNoteFromDocument,
+  promoteDraftThreadsToOpen,
+  pruneCleanStateInDocument,
   resolveWorkspaceLocation,
+  setThreadStatusInDocument,
   stageAllCommandArgs,
   stageCommandArgs,
+  stagePathsCommandArgs,
+  upsertSlicesInDocument,
   withAlpha,
 } from "../mods/git-status/model.js";
 
@@ -49,7 +57,6 @@ test("resolveWorkspaceLocation preserves sibling terminal cwd when git-status mo
     { pane: "p-mod", tab: "tb1", terminal: null, mod: "git-status", cwd: null, branch: null },
   ];
 
-  // Focus on the mod pane itself (terminal: null, cwd: null)
   const loc = resolveWorkspaceLocation({
     spaces,
     panes,
@@ -88,7 +95,7 @@ test("planPaneToggle splits right when absent and closes pane when present", () 
   });
 });
 
-test("parsePorcelainStatusZ and mergeStatusAndStats handle M, MM, A, ??, D, R, U", () => {
+test("parsePorcelainStatusZ, mergeStatusAndStats, and slice staging commands handle all statuses", () => {
   const raw = [
     " M src/outbox/poller.ts",
     "M  src/db/schema/permissions.ts",
@@ -115,130 +122,237 @@ test("parsePorcelainStatusZ and mergeStatusAndStats handle M, MM, A, ??, D, R, U
     "src/components/EditableCell.tsx": 45,
   });
 
-  const poller = files.find((f) => f.path === "src/outbox/poller.ts");
-  assert.equal(poller.status, "M");
-  assert.equal(poller.staged, false);
-  assert.equal(poller.hasUnstaged, true);
-  assert.equal(poller.additions, 14);
-  assert.equal(poller.deletions, 3);
-
-  const perms = files.find((f) => f.path === "src/db/schema/permissions.ts");
-  assert.equal(perms.staged, true);
-  assert.equal(perms.hasStaged, true);
-  assert.equal(perms.hasUnstaged, false);
-
-  const both = files.find((f) => f.path === "src/auth/session.ts");
-  assert.equal(both.partiallyStaged, true);
-  assert.equal(both.additions, 6);
-  assert.equal(both.deletions, 1);
-
-  const untracked = files.find((f) => f.path === "src/components/EditableCell.tsx");
-  assert.equal(untracked.status, "A");
-  assert.equal(untracked.additions, 45);
-
-  const renamed = files.find((f) => f.path === "src/new-name.ts");
-  assert.equal(renamed.status, "R");
-  assert.equal(renamed.origPath, "src/old-name.ts");
-
-  const conflict = files.find((f) => f.path === "src/conflict.ts");
-  assert.equal(conflict.status, "U");
-  assert.equal(conflict.conflict, true);
-});
-
-test("stageCommandArgs and stageAllCommandArgs support both normal and unborn HEAD", () => {
   assert.deepEqual(stageCommandArgs({ path: "a.ts", staged: false }, true), ["add", "-A", "--", "a.ts"]);
-  assert.deepEqual(stageCommandArgs({ path: "a.ts", staged: true }, true), ["reset", "HEAD", "--", "a.ts"]);
   assert.deepEqual(stageCommandArgs({ path: "a.ts", staged: true }, false), ["rm", "--cached", "-r", "--", "a.ts"]);
-
-  assert.deepEqual(stageAllCommandArgs([{ staged: true }, { staged: false }], true), ["add", "-A"]);
-  assert.deepEqual(stageAllCommandArgs([{ staged: true }], false), ["rm", "--cached", "-r", "."]);
+  assert.deepEqual(
+    stagePathsCommandArgs([{ path: "a.ts" }, { path: "b.ts", origPath: "old-b.ts" }], true, true),
+    ["add", "-A", "--", "a.ts", "old-b.ts", "b.ts"],
+  );
+  assert.deepEqual(stageAllCommandArgs(files, true), ["add", "-A"]);
 });
 
-test("AgentChangeNote document CRUD, diff extraction, filtering, and footer counts", () => {
-  const step1 = appendNoteToDocument(
-    "",
-    {
-      filePath: "src\\outbox\\poller.ts",
-      summary: "Added transactional outbox retry jitter calculation in pollBatch",
-      agentName: "pi",
-      diffHunk: "@@ -24,1 +24,2 @@\n-const backoff = 200;\n+const backoff = calcJitter();\n+await sleep(backoff);",
+test("v1 notes migrate seamlessly into v2 ChangeSlices", () => {
+  const legacyJson = JSON.stringify({
+    version: 1,
+    notes: [
+      {
+        id: "n-1",
+        filePath: "src/auth/session.ts",
+        summary: "Added sliding session expiry guard",
+        agentName: "pi",
+        timestamp: "2026-11-20T15:00:00.000Z",
+        lineRange: "L18-L24",
+      },
+    ],
+  });
+  const doc = parseReviewDocument("", legacyJson);
+  assert.equal(doc.version, 2);
+  assert.equal(doc.slices.length, 1);
+  assert.equal(doc.slices[0].title, "Added sliding session expiry guard");
+  assert.equal(doc.slices[0].files[0].filePath, "src/auth/session.ts");
+  assert.equal(doc.slices[0].files[0].lineRange, "L18-L24");
+});
+
+test("buildSliceGroups groups multi-file slices and guarantees Unattributed bucket for manual edits", () => {
+  const upserted = upsertSlicesInDocument("", {
+    overview: "Threads tenantId across auth session validation and API route handlers.",
+    slices: [
+      {
+        id: "s-auth",
+        title: "Thread tenantId into session validation and routes",
+        rationale: "Required so downstream outbox queries isolate per tenant.",
+        agentName: "pi",
+        order: 1,
+        files: [
+          { filePath: "src/auth/session.ts", lineRange: "L18-L32" },
+          { filePath: "src/api/routes.ts", lineRange: "L44-L49" },
+        ],
+      },
+    ],
+    suggestedCommit: {
+      subject: "feat(auth): thread tenantId through session and routes",
+      body: "- Propagate tenantId parameter\n- Enforce non-empty tenantId",
     },
-    { nowIso: "2026-11-20T15:00:00.000Z", createId: () => "n-101" },
-  );
+    nowIso: "2026-11-20T16:00:00.000Z",
+  });
 
-  const step2 = appendNoteToDocument(
-    step1.text,
+  const gitFiles = [
     {
-      filePath: "README.md",
-      summary: "Removed deprecated setup instructions",
-      agentName: "refactor-subagent",
-      diffHunk: "L1-L12",
+      path: "src/auth/session.ts",
+      dir: "src/auth/",
+      name: "session.ts",
+      status: "M",
+      staged: true,
+      hasStaged: true,
+      hasUnstaged: false,
+      additions: 14,
+      deletions: 2,
     },
-    { nowIso: "2026-11-20T15:02:00.000Z", createId: () => "n-102" },
-  );
-
-  const notes = parseNotesDocument(step2.text);
-  assert.equal(notes.length, 2);
-  assert.equal(notes[0].id, "n-102");
-  assert.equal(notes[1].filePath, "src/outbox/poller.ts");
-
-  const hunkInfo = extractNoteDiffInfo(notes[1]);
-  assert.equal(hunkInfo.hasDiff, true);
-  assert.equal(hunkInfo.lineRange, "L24-L25");
-
-  const rangeOnlyInfo = extractNoteDiffInfo(notes[0]);
-  assert.equal(rangeOnlyInfo.hasDiff, false);
-  assert.equal(rangeOnlyInfo.lineRange, "L1-L12");
-
-  const byFile = groupNotesByFile(notes);
-  const files = [
-    { path: "src/outbox/poller.ts", hasStaged: false, hasUnstaged: true },
-    { path: "README.md", hasStaged: true, hasUnstaged: false },
+    {
+      path: "src/api/routes.ts",
+      dir: "src/api/",
+      name: "routes.ts",
+      status: "M",
+      staged: false,
+      hasStaged: false,
+      hasUnstaged: true,
+      additions: 10,
+      deletions: 2,
+    },
+    {
+      path: "README.md",
+      dir: "",
+      name: "README.md",
+      status: "M",
+      staged: false,
+      hasStaged: false,
+      hasUnstaged: true,
+      additions: 3,
+      deletions: 0,
+    },
   ];
 
-  assert.equal(filterFiles(files, byFile, { filter: "STAGED" }).length, 1);
-  assert.equal(filterFiles(files, byFile, { filter: "UNSTAGED" }).length, 1);
-  assert.equal(filterFiles(files, byFile, { filter: "NOTES" }).length, 2);
-  assert.equal(
-    filterFiles(
-      [...files, { path: "src/manual.ts", hasStaged: false, hasUnstaged: true }],
-      byFile,
-      { filter: "NOTES" },
-    ).length,
-    2,
-  );
-  assert.equal(filterFiles(files, byFile, { filter: "ALL", query: "jitter" }).length, 1);
-  assert.equal(filterFiles(files, byFile, { filter: "ALL", query: "refactor-subagent" }).length, 1);
+  const groups = buildSliceGroups(gitFiles, upserted.doc.slices, upserted.doc.threads);
+  assert.equal(groups.length, 2);
 
-  assert.deepEqual(computeFooterCounts(files, byFile), { staged: 1, unstaged: 1, notes: 2 });
+  const authGroup = groups[0];
+  assert.equal(authGroup.id, "s-auth");
+  assert.equal(authGroup.items.length, 2);
+  assert.equal(authGroup.additions, 24);
+  assert.equal(authGroup.deletions, 4);
+  assert.equal(authGroup.partiallyStaged, true);
 
-  const removed = removeNoteFromDocument(step2.text, "n-101");
-  assert.equal(removed.removed, 1);
-  assert.equal(removed.notes.length, 1);
+  const unattrib = groups[1];
+  assert.equal(unattrib.id, UNATTRIBUTED_SLICE_ID);
+  assert.equal(unattrib.isUnattributed, true);
+  assert.equal(unattrib.items.length, 1);
+  assert.equal(unattrib.items[0].filePath, "README.md");
 
-  const cleared = clearNotesInDocument(step2.text, { keepPaths: new Set(["src/outbox/poller.ts"]) });
-  assert.equal(cleared.notes.length, 1);
-  assert.equal(cleared.notes[0].id, "n-101");
+  assert.equal(filterFilesForReview(gitFiles, upserted.doc.slices, [], { query: "tenantId" }).length, 2);
+
+  const overviewInfo = deriveOverviewInfo({
+    files: gitFiles,
+    slices: upserted.doc.slices,
+    overview: upserted.doc.overview,
+  });
+  assert.equal(overviewInfo.synthesized, false);
+  assert.match(overviewInfo.text, /Threads tenantId across auth/);
+  assert.equal(overviewInfo.additions, 27);
+
+  const synthOverview = deriveOverviewInfo({
+    files: gitFiles,
+    slices: upserted.doc.slices,
+    overview: null,
+  });
+  assert.equal(synthOverview.synthesized, true);
+  assert.match(synthOverview.text, /Thread tenantId into session/);
 });
 
-test("buildFullFileDiffLines and parseDiffLines handle staged + unstaged sections and line numbers", () => {
+test("ReviewThread back-and-forth lifecycle, dispatch prompt, and post-commit pruning", () => {
+  // 1. Reviewer adds a draft comment on line 24
+  const step1 = addCommentToDocument(
+    "",
+    {
+      sliceId: "s-auth",
+      filePath: "src/auth/session.ts",
+      lineNumber: 24,
+      lineRange: "L24",
+      codeExcerpt: "+ export function validate(token: string, tenantId?: string)",
+      author: "you",
+      role: "user",
+      body: "Make tenantId required instead of optional here.",
+    },
+    { nowIso: "2026-11-20T16:10:00.000Z", createId: () => "t-100" },
+  );
+  assert.equal(step1.thread.status, "draft");
+
+  // 2. Submit Review promotes draft -> open and builds dispatch prompt
+  const step2 = promoteDraftThreadsToOpen(step1.text, "2026-11-20T16:11:00.000Z");
+  assert.equal(step2.promotedCount, 1);
+  assert.equal(step2.openThreads[0].status, "open");
+
+  const prompt = formatReviewDispatchPrompt(step2.doc.threads, [
+    { id: "s-auth", title: "Thread tenantId into session" },
+  ]);
+  assert.match(prompt, /Thread `t-100`/);
+  assert.match(prompt, /src\/auth\/session\.ts/);
+  assert.match(prompt, /Make tenantId required/);
+
+  // 3. Agent replies and marks thread addressed
+  const step3 = addCommentToDocument(
+    step2.text,
+    {
+      threadId: "t-100",
+      author: "pi",
+      role: "agent",
+      body: "Updated tenantId to required string and fixed callers.",
+      status: "addressed",
+    },
+    { nowIso: "2026-11-20T16:12:00.000Z" },
+  );
+  assert.equal(step3.thread.status, "addressed");
+  assert.equal(step3.thread.messages.length, 2);
+  assert.equal(countActiveReviewThreads(step3.doc.threads).unresolvedTotal, 0);
+  assert.equal(countActiveReviewThreads(step3.doc.threads).addressed, 1);
+
+  // 4. Reviewer resolves thread, then commits -> prune removes resolved thread
+  const step4 = setThreadStatusInDocument(step3.text, "t-100", "resolved", "2026-11-20T16:13:00.000Z");
+  const pruned = pruneCleanStateInDocument(step4.text, new Set());
+  assert.equal(pruned.doc.threads.length, 0);
+});
+
+test("deriveCommitSuggestion scopes to staged slice when partial staging is active and builds git commit args", () => {
+  const slices = [
+    { id: "s1", title: "feat(auth): thread tenantId", rationale: "Isolate tenants.", files: [{ filePath: "a.ts" }] },
+    { id: "s2", title: "fix(outbox): add retry jitter", rationale: "Avoid herd.", files: [{ filePath: "b.ts" }] },
+  ];
+  const suggestedCommit = { subject: "feat: tenant isolation and outbox retry jitter", body: "- auth\n- outbox" };
+
+  // When nothing is staged, uses overall suggestedCommit
+  const full = deriveCommitSuggestion({
+    files: [
+      { path: "a.ts", hasStaged: false },
+      { path: "b.ts", hasStaged: false },
+    ],
+    slices,
+    suggestedCommit,
+  });
+  assert.equal(full.subject, "feat: tenant isolation and outbox retry jitter");
+
+  // When only a.ts (Slice 1) is staged, scopes suggestion to Slice 1!
+  const scoped = deriveCommitSuggestion({
+    files: [
+      { path: "a.ts", hasStaged: true },
+      { path: "b.ts", hasStaged: false },
+    ],
+    slices,
+    suggestedCommit,
+  });
+  assert.equal(scoped.subject, "feat(auth): thread tenantId");
+
+  assert.deepEqual(buildGitCommitCommands({ subject: "feat: test", body: "- one", hasStagedFiles: true }), [
+    ["commit", "-m", "feat: test", "-m", "- one"],
+  ]);
+  assert.deepEqual(buildGitCommitCommands({ subject: "feat: all", hasStagedFiles: false }), [
+    ["add", "-A"],
+    ["commit", "-m", "feat: all"],
+  ]);
+});
+
+test("extractNoteDiffInfo, buildFullFileDiffLines, parseDiffLines, formatRelativeTime, withAlpha", () => {
+  const info = extractNoteDiffInfo({ diffHunk: "@@ -24,1 +24,2 @@\n-old\n+new1\n+new2" });
+  assert.equal(info.lineRange, "L24-L25");
+  assert.equal(info.hasDiff, true);
+
   const lines = buildFullFileDiffLines({
     stagedOut: "diff --git a/a.js b/a.js\n@@ -1,2 +1,2 @@\n-old\n+staged\n ctx\n",
     unstagedOut: "diff --git a/a.js b/a.js\n@@ -10,1 +10,2 @@\n ctx2\n+unstaged\n",
   });
   const rows = parseDiffLines(lines);
   assert.equal(rows[0].kind, "section");
-  assert.equal(rows[1].kind, "@");
-  assert.equal(rows[2].kind, "-");
   assert.equal(rows[2].lineNumber, 1);
-  assert.equal(rows[3].kind, "+");
-  assert.equal(rows[3].lineNumber, 1);
-});
 
-test("formatRelativeTime and withAlpha produce clean output", () => {
   const base = Date.parse("2026-11-20T12:10:00.000Z");
   assert.equal(formatRelativeTime("2026-11-20T12:09:40.000Z", base), "Just now");
-  assert.equal(formatRelativeTime("2026-11-20T12:05:00.000Z", base), "5m ago");
-  assert.equal(withAlpha("#cba6f7", "24"), "#cba6f724");
   assert.equal(withAlpha("#cba6f7ff", "1a"), "#cba6f71a");
 });

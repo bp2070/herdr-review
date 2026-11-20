@@ -1,20 +1,9 @@
-# Herdr Git Changes & Agent Notes (`git-status`)
+# Herdr Git Review (`git-status`)
 
-A movable, splittable native GPUI workspace pane for **Herdr** that pairs live Git status and diffs with structured, discrete per-file **Agent Change Notes** (`AgentChangeNote`) in the active space.
-
-## Features
-
-- **Standard Workspace Pane**: Splits beside terminals (`pane.split`), opens as a full tab (`tab.new`), swaps/docks on any edge via Herdr's native top-center drag grip, resizes, zooms (`pane.zoom`), and persists in the tab's layout tree.
-- **One-Key Toggle (`Alt+Shift+G`)**: Pressing `Alt+Shift+G` (or running `herdr-app do mod.open --name git-status`) splits `git-status` to the right of the active pane, or closes it if already open in the active tab.
-- **Live Git Status & Diffs**:
-  - Runs read-only `git status --porcelain=v1 -z` and `git diff` (staged + unstaged + untracked previews) without touching `.git/index` locks.
-  - Auto-refreshes via `watchFolder` (both worktree root and `<git-dir>` for linked worktrees) plus manual refresh.
-  - Supports per-file stage/unstage checkboxes and header **Stage All / Unstage All** (including unborn `HEAD` repositories).
-  - Collapsible **Full Git Diff** inside any expanded file showing syntax-colored hunks and line numbers.
-- **Discrete Per-File Agent Notes (`<git-dir>/herdr-agent-notes.json`)**:
-  - Stored inside `git rev-parse --git-dir` so notes are isolated per worktree, never dirty `git status`, and trigger live refreshes.
-  - Clicking an expanded file's note reveals its optional inline `diffHunk` snippet.
-  - Includes both an in-pane **+ Note** modal dialog (with one-click live diff prefill) and a zero-dependency CLI (`bin/herdr-git-note.mjs`) for coding agents.
+A movable, splittable native GPUI workspace pane and Pi package for **pre-commit code review** in Herdr:
+- **Overall Summary + Logical Change Slices**: Displays a collapsible **Overall Summary** card at the top, followed by multi-file **Change Slices** grouped by intent (with an automatic **Unattributed / Manual Changes** bucket guaranteeing 100% of `git status` is always visible).
+- **Interactive Review Comments (`hc send` + Clipboard)**: Click any diff line, file, or slice to queue **Draft** review comments, then click **`Submit Review → pi (N)`** to dispatch them straight into the space's live agent terminal (with multi-turn `Draft → Open → Addressed → Resolved` threads).
+- **On-Demand Commit Dialog**: Clicking **`Commit…`** (or pressing `c` when the pane is focused) opens a dedicated **Commit Changes** dialog pre-filled with `suggestedCommit` (`subject` + `body`), an interactive `Staged only` vs `All files` scope switch, and a non-blocking warning badge if unresolved comments exist.
 
 ## Opening & Moving the Pane
 
@@ -25,46 +14,21 @@ herdr-app do mod.open --name git-status
 # Or split/dock explicitly in any direction ("right" or "down") or as a standalone tab
 herdr-app do pane.split --direction right --mod git-status
 herdr-app do pane.split --direction down --mod git-status
-herdr-app do tab.new --name "Git Changes" --mod git-status
+herdr-app do tab.new --name "Git Review" --mod git-status
 ```
 
-Once open in a tab, drag Herdr's top-center pane grip to dock it left, right, top, or bottom, or use `Alt+Shift+H/J/K/L` (`pane.swap`) and `Ctrl+Shift+Z` (`pane.zoom`).
+Switch between **`Slices`** (grouped by logical intent) and **`Files`** (classic file list) in the top-left toggle. Filter by **`All | Staged | Unstaged | Open`**.
 
-### Pane Keyboard Shortcuts (when focused via click or `Alt+H/J/K/L`)
+## Pi Package Integration (`pi-package`)
 
-- `j` / `↓`, `k` / `↑` — Move through changed files
-- `Enter` / `l` / `→`, `h` / `←` — Expand or collapse file notes
-- `s` / `Space` — Stage or unstage selected file
-- `d` — Toggle live **Full Git Diff** on selected file
-- `n` — Open **Add Discrete Agent Note** dialog for selected file
-- `/` — Focus file/note filter input (`Esc` returns focus to list)
-- `r` — Refresh Git status & notes
-
-## Agent Notes Schema & CLI
-
-Each note in `<git-dir>/herdr-agent-notes.json` follows:
-
-```ts
-interface AgentChangeNote {
-  id: string;
-  filePath: string;       // Repo-relative POSIX path, e.g. "src/auth/session.ts"
-  summary: string;        // Concise 1-line description of the single logical change
-  agentName?: string;     // e.g. "pi", "claude", "refactor-subagent"
-  timestamp: string;      // ISO-8601 timestamp
-  diffHunk?: string;      // Optional unified diff hunk or +/- snippet tied to this change
-  lineRange?: string;     // Optional explicit line range, e.g. "L24-L35"
-}
-```
-
-### Automatic Note Recording in Pi (`pi-package`)
-
-This repository is also a **Pi package** (`extensions/herdr-git-notes/index.ts`). Installing it registers:
-- **`record_change_note` tool** (callable directly and via `tools.record_change_note` in `codemode`) with single or batched `notes: [...]` support and automatic `git diff -U1` hunk capture.
-- **`before_agent_start` + `agent_before_settle` coverage guard**: instructs Pi to record 1-line summaries on repository edits and nudges once before settling if tracked/unignored repository files were modified without notes.
-- **`/git-notes [list|prune|clear]`** slash command inside Pi.
+Installing this repository into Pi registers:
+- **`record_change_slices`**: Groups modified repository files into logical `slices` with auto-captured `git diff -U2` hunks and sets `suggestedCommit: { subject, body? }`.
+- **`review_threads`**: Lists open review threads or posts agent replies (`status: "addressed"`).
+- **`agent_before_settle` coverage guard**: Ensures modified repository files are grouped into slices with an up-to-date `suggestedCommit` before the turn settles.
+- **`/git-review [list|prune|clear]`** slash command.
 
 ```sh
-# Local development (loads live from repo; run /reload in active Pi sessions)
+# Local live development (run /reload in active Pi sessions)
 pi install C:/Users/bryan.petzinger/workspace/herdr-git-status
 
 # From GitHub or npm once published
@@ -72,35 +36,30 @@ pi install git:github.com/<owner>/herdr-git-status
 pi install npm:herdr-git-status
 ```
 
-### Recording Notes from Other CLI Agents
+## CLI Usage (`bin/herdr-git-note.mjs`)
+
+State is persisted per checkout/worktree in `<git-dir>/herdr-review.json` so `git status` stays clean:
 
 ```sh
-# Append a note and automatically capture the current git diff hunk for that file
-node C:/Users/bryan.petzinger/workspace/herdr-git-status/bin/herdr-git-note.mjs add \
-  --file src/auth/session.ts \
-  --summary "Added sliding session expiry guard before token refresh" \
-  --agent pi \
-  --auto-hunk
+# Upsert a multi-file logical slice + suggested commit message
+node bin/herdr-git-note.mjs slice \
+  --title "Thread tenantId through session validation & routes" \
+  --files "src/auth/session.ts,src/api/routes.ts" \
+  --rationale "Isolate downstream outbox queries per tenant" \
+  --commit "feat(auth): thread tenantId through session and routes" \
+  --agent pi
 
-# Append a note with an explicit diff hunk from stdin
-git diff -U1 -- src/auth/session.ts | node C:/Users/bryan.petzinger/workspace/herdr-git-status/bin/herdr-git-note.mjs add \
-  --file src/auth/session.ts \
-  --summary " tightened cookie SameSite attribute" \
-  --agent refactor-subagent \
-  --hunk -
+# Reply to an open review thread
+node bin/herdr-git-note.mjs reply --thread t-1234abcd --body "Made tenantId required and updated callers" --agent pi
 
-# List, remove, or prune notes for already-committed files
-node C:/Users/bryan.petzinger/workspace/herdr-git-status/bin/herdr-git-note.mjs list
-node C:/Users/bryan.petzinger/workspace/herdr-git-status/bin/herdr-git-note.mjs clear --prune-clean
+# Inspect or prune committed slices & resolved threads
+node bin/herdr-git-note.mjs list
+node bin/herdr-git-note.mjs clear --prune-clean
 ```
 
-## Installation & Validation
+## Validation
 
-```powershell
-New-Item -ItemType Junction \
-  -Path "$HOME\.config\herdr-app\mods\git-status" \
-  -Target "C:\Users\bryan.petzinger\workspace\herdr-git-status\mods\git-status"
-
+```sh
 npm run validate
 herdr-app check ~/.config/herdr-app/mods/git-status
 ```

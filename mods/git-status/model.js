@@ -1,10 +1,13 @@
-// Pure data, Git status/diff parsing, AgentChangeNote schema, filtering, and palette helpers.
-// Keep this module free of Herdr, GPUI, and Node-specific imports so it runs identically in
-// gpui-shell, the agent CLI, and `node --test`.
+// Pure data, Git status/diff parsing, ChangeSlice & ReviewThread store, commit message derivation,
+// review dispatch formatting, and Catppuccin Mocha palette helpers.
+// Keep free of Herdr, GPUI, and Node-specific imports.
 
 export const MOD_NAME = "git-status";
-export const NOTES_FILENAME = "herdr-agent-notes.json";
+export const REVIEW_FILENAME = "herdr-review.json";
+export const LEGACY_NOTES_FILENAME = "herdr-agent-notes.json";
+export const NOTES_FILENAME = REVIEW_FILENAME;
 export const SHARED_BUMP_KEY = "git-status.bump";
+export const UNATTRIBUTED_SLICE_ID = "__unattributed__";
 
 // Prevent read-only git calls from touching .git/index or fsmonitor cookies (avoids watch loops).
 export const GIT_READ_ARGS = [
@@ -41,9 +44,6 @@ export const CATPPUCCIN_MOCHA_FALLBACK = {
   ansi6: "#94e2d5", // teal
 };
 
-/**
- * Safely normalizes `#rgb`, `#rrggbb`, or `#rrggbbaa` and applies a 2-hex-digit alpha suffix.
- */
 export function withAlpha(color, alphaHex) {
   const raw = typeof color === "string" ? color.trim() : "";
   const alpha = String(alphaHex || "ff").replace(/^#/, "").slice(0, 2).padStart(2, "0");
@@ -88,9 +88,6 @@ export function normalizeSlashes(value) {
   return String(value ?? "").replace(/\\/g, "/");
 }
 
-/**
- * Normalizes a file path to a clean repo-relative POSIX path (e.g. `src/auth/session.ts`).
- */
 export function normalizeRepoPath(filePath, repoRoot = "") {
   let clean = normalizeSlashes(filePath).trim();
   if (!clean) return "";
@@ -127,10 +124,6 @@ export function joinPosixPath(base, rel) {
   return `${left}/${right}`;
 }
 
-/**
- * Resolves the active workspace's working directory and machine without losing context when a
- * mod pane (such as `git-status` itself, where `pane.cwd` is null) holds keyboard focus.
- */
 export function resolveWorkspaceLocation({
   spaces = [],
   panes = [],
@@ -208,10 +201,13 @@ export function locationKey(loc) {
   return JSON.stringify({ cwd: loc?.cwd ?? null, on: loc?.on ?? null });
 }
 
-/**
- * Decides how `mod.open:git-status` toggles the workspace pane in the active tab.
- */
-export function planPaneToggle({ spaces = [], panes = [], focused = null, modName = MOD_NAME, direction = "right" } = {}) {
+export function planPaneToggle({
+  spaces = [],
+  panes = [],
+  focused = null,
+  modName = MOD_NAME,
+  direction = "right",
+} = {}) {
   const space =
     spaces.find((s) => s.active) ??
     (focused?.space ? spaces.find((s) => s.id === focused.space) : null) ??
@@ -224,7 +220,7 @@ export function planPaneToggle({ spaces = [], panes = [], focused = null, modNam
     null;
 
   if (!space || !activeTab) {
-    return { command: "tab.new", args: { name: "Git Changes", mod: modName } };
+    return { command: "tab.new", args: { name: "Git Review", mod: modName } };
   }
 
   const tabPanes = panes.filter((p) => p.tab === activeTab.id);
@@ -250,14 +246,14 @@ export function planPaneToggle({ spaces = [], panes = [], focused = null, modNam
 
   return {
     command: "tab.new",
-    args: { name: "Git Changes", space: space.id, mod: modName },
+    args: { name: "Git Review", space: space.id, mod: modName },
   };
 }
 
-/**
- * Parses `git status --porcelain=v1 -z` output, including rename/copy pairs (`R`/`C`),
- * untracked files (`??`), unmerged conflicts (`U`, `AA`, `DD`), and staged/unstaged flags.
- */
+// ============================================================================
+// GIT STATUS, NUMSTAT, STAGING, & DIFF PARSING
+// ============================================================================
+
 export function parsePorcelainStatusZ(stdout, limit = 1000) {
   const rawTokens = String(stdout ?? "").split("\0");
   const entries = [];
@@ -317,9 +313,6 @@ export function parsePorcelainStatusZ(stdout, limit = 1000) {
   return { entries, limited: total > limit, total };
 }
 
-/**
- * Parses `git diff [--cached] --numstat -z --no-renames` output.
- */
 export function parseNumstatZ(stdout) {
   const stats = {};
   const tokens = String(stdout ?? "").split("\0");
@@ -343,7 +336,10 @@ export function parseNumstatZ(stdout) {
 
 export function mergeStatusAndStats(entries, stagedStats = {}, unstagedStats = {}, untrackedLineCounts = {}) {
   return entries.map((entry) => {
-    const st = stagedStats[entry.path] ?? (entry.origPath ? stagedStats[entry.origPath] : null) ?? { add: 0, del: 0, binary: false };
+    const st =
+      stagedStats[entry.path] ??
+      (entry.origPath ? stagedStats[entry.origPath] : null) ??
+      { add: 0, del: 0, binary: false };
     const un = unstagedStats[entry.path] ?? { add: 0, del: 0, binary: false };
     const untrackedLines = entry.fresh ? untrackedLineCounts[entry.path] ?? 0 : 0;
     const stagedAdd = st.add;
@@ -363,9 +359,6 @@ export function mergeStatusAndStats(entries, stagedStats = {}, unstagedStats = {
   });
 }
 
-/**
- * Builds git argument list to toggle staging on a single file safely (even on unborn HEAD).
- */
 export function stageCommandArgs(file, hasHead) {
   if (!file?.path) return null;
   if (file.staged) {
@@ -373,6 +366,21 @@ export function stageCommandArgs(file, hasHead) {
   }
   const paths = file.origPath && file.origPath !== file.path ? [file.origPath, file.path] : [file.path];
   return ["add", "-A", "--", ...paths];
+}
+
+export function stagePathsCommandArgs(gitFiles, shouldStage, hasHead) {
+  if (!Array.isArray(gitFiles) || gitFiles.length === 0) return null;
+  const paths = [];
+  for (const f of gitFiles) {
+    if (f.origPath && f.origPath !== f.path) paths.push(f.origPath);
+    if (f.path) paths.push(f.path);
+  }
+  const unique = [...new Set(paths)];
+  if (!unique.length) return null;
+  if (!shouldStage) {
+    return hasHead ? ["reset", "HEAD", "--", ...unique] : ["rm", "--cached", "-r", "--", ...unique];
+  }
+  return ["add", "-A", "--", ...unique];
 }
 
 export function stageAllCommandArgs(files, hasHead) {
@@ -397,9 +405,6 @@ export function untab(text) {
   });
 }
 
-/**
- * Parses unified diff lines (or raw `+/-` snippet lines) into structured rows with optional line numbers.
- */
 export function parseDiffLines(lines) {
   let oldLine = null;
   let newLine = null;
@@ -409,12 +414,12 @@ export function parseDiffLines(lines) {
     if (hunk) {
       oldLine = Number(hunk[1]);
       newLine = Number(hunk[2]);
-      return { kind: "@", text: untab(line) };
+      return { kind: "@", lineNumber: null, text: untab(line) };
     }
     if (line.startsWith("── ")) {
       oldLine = null;
       newLine = null;
-      return { kind: "section", text: line };
+      return { kind: "section", lineNumber: null, text: line };
     }
     const kind = line[0];
     if (kind === "+") {
@@ -498,19 +503,14 @@ export function buildFullFileDiffLines({
   return trimmed;
 }
 
-/**
- * Extracts displayable line range & diff snippet lines from an `AgentChangeNote`.
- * Supports both standalone line-range values in `diffHunk` (e.g. `"L24-L35"`) and unified/raw diff blocks.
- */
-export function extractNoteDiffInfo(note) {
-  const rawHunk = typeof note?.diffHunk === "string" ? note.diffHunk.replace(/\r\n/g, "\n").trim() : "";
-  const explicitRange = typeof note?.lineRange === "string" ? note.lineRange.trim() : "";
+export function extractNoteDiffInfo(item) {
+  const rawHunk = typeof item?.diffHunk === "string" ? item.diffHunk.replace(/\r\n/g, "\n").trim() : "";
+  const explicitRange = typeof item?.lineRange === "string" ? item.lineRange.trim() : "";
 
   if (!rawHunk) {
     return { lineRange: explicitRange, hasDiff: false, lines: [] };
   }
 
-  // Standalone short line-range string in diffHunk, e.g. "L24-L35" or "24-35"
   if (!rawHunk.includes("\n") && /^L?\d+(?:\s*[-–:]\s*L?\d+)?$/i.test(rawHunk)) {
     const formatted = /^L/i.test(rawHunk) ? rawHunk : `L${rawHunk}`;
     return { lineRange: explicitRange || formatted, hasDiff: false, lines: [] };
@@ -535,163 +535,874 @@ export function extractNoteDiffInfo(note) {
   };
 }
 
-/**
- * Validates and normalizes a discrete `AgentChangeNote`.
- */
-export function normalizeAgentNote(raw, fallbackId = "note") {
+// ============================================================================
+// V2 REVIEW DOCUMENT: SLICES, THREADS, SUGGESTED COMMIT (& V1 MIGRATION)
+// ============================================================================
+
+export function normalizeSliceFile(raw) {
+  if (typeof raw === "string") {
+    const fp = normalizeRepoPath(raw);
+    return fp ? { filePath: fp } : null;
+  }
   if (!raw || typeof raw !== "object") return null;
   const filePath = normalizeRepoPath(raw.filePath ?? raw.path ?? "");
+  if (!filePath) return null;
   const summary = String(raw.summary ?? raw.description ?? "").replace(/\s+/g, " ").trim();
-  if (!filePath || !summary) return null;
+  const lineRange = String(raw.lineRange ?? raw.lines ?? "").trim();
+  const diffHunk = typeof (raw.diffHunk ?? raw.diff) === "string" ? (raw.diffHunk ?? raw.diff).replace(/\r\n/g, "\n").trimEnd() : "";
+
+  const entry = { filePath };
+  if (summary) entry.summary = summary;
+  if (lineRange) entry.lineRange = lineRange;
+  if (diffHunk) entry.diffHunk = diffHunk;
+  return entry;
+}
+
+export function normalizeSlice(raw, fallbackId = "slice-1", indexOrder = 0) {
+  if (!raw || typeof raw !== "object") return null;
+  const title = String(raw.title ?? raw.summary ?? "").replace(/\s+/g, " ").trim();
+  const rawFiles = Array.isArray(raw.files)
+    ? raw.files
+    : raw.filePath
+      ? [{ filePath: raw.filePath, lineRange: raw.lineRange, diffHunk: raw.diffHunk }]
+      : [];
+
+  const seenPaths = new Set();
+  const files = [];
+  for (const item of rawFiles) {
+    const normalized = normalizeSliceFile(item);
+    if (!normalized || seenPaths.has(normalized.filePath)) continue;
+    seenPaths.add(normalized.filePath);
+    files.push(normalized);
+  }
+
+  if (!title || files.length === 0) return null;
 
   const id = String(raw.id ?? "").trim() || fallbackId;
-  const agentRaw = String(raw.agentName ?? raw.agent ?? "").trim();
-  const timestampRaw = String(raw.timestamp ?? "").trim();
-  const parsedTime = timestampRaw ? Date.parse(timestampRaw) : NaN;
+  const rationale = String(raw.rationale ?? raw.why ?? "").trim();
+  const agentName = String(raw.agentName ?? raw.agent ?? "").trim();
+  const parsedTime = raw.timestamp ? Date.parse(String(raw.timestamp)) : NaN;
   const timestamp = Number.isFinite(parsedTime) ? new Date(parsedTime).toISOString() : new Date(0).toISOString();
-  const diffHunkRaw = typeof (raw.diffHunk ?? raw.diff) === "string" ? (raw.diffHunk ?? raw.diff).replace(/\r\n/g, "\n").trimEnd() : "";
-  const lineRangeRaw = typeof (raw.lineRange ?? raw.lines) === "string" ? (raw.lineRange ?? raw.lines).trim() : "";
+  const order = Number.isFinite(Number(raw.order)) ? Number(raw.order) : indexOrder;
 
-  const note = {
+  const slice = {
     id,
-    filePath,
-    summary,
+    title,
+    timestamp,
+    order,
+    files,
+  };
+  if (rationale) slice.rationale = rationale;
+  if (agentName) slice.agentName = agentName;
+  return slice;
+}
+
+export function normalizeReviewMessage(raw, fallbackId = "m-1") {
+  if (!raw || typeof raw !== "object") return null;
+  const body = String(raw.body ?? raw.text ?? "").trim();
+  if (!body) return null;
+  const role = raw.role === "agent" ? "agent" : "user";
+  const author = String(raw.author ?? (role === "agent" ? "pi" : "you")).trim() || (role === "agent" ? "pi" : "you");
+  const parsedTime = raw.timestamp ? Date.parse(String(raw.timestamp)) : NaN;
+  const timestamp = Number.isFinite(parsedTime) ? new Date(parsedTime).toISOString() : new Date(0).toISOString();
+  return {
+    id: String(raw.id ?? "").trim() || fallbackId,
+    author,
+    role,
+    body,
     timestamp,
   };
-  if (agentRaw) note.agentName = agentRaw;
-  if (diffHunkRaw) note.diffHunk = diffHunkRaw;
-  if (lineRangeRaw) note.lineRange = lineRangeRaw;
-  return note;
 }
 
-export function parseNotesDocument(jsonText) {
-  if (!jsonText || !String(jsonText).trim()) return [];
+const VALID_THREAD_STATUSES = new Set(["draft", "open", "addressed", "resolved"]);
+
+export function normalizeThread(raw, fallbackId = "t-1") {
+  if (!raw || typeof raw !== "object") return null;
+  const messages = (Array.isArray(raw.messages) ? raw.messages : [])
+    .map((m, idx) => normalizeReviewMessage(m, `${fallbackId}-m${idx + 1}`))
+    .filter(Boolean);
+
+  if (messages.length === 0 && typeof raw.body === "string" && raw.body.trim()) {
+    const single = normalizeReviewMessage(
+      { body: raw.body, author: raw.author, role: raw.role, timestamp: raw.createdAt },
+      `${fallbackId}-m1`,
+    );
+    if (single) messages.push(single);
+  }
+  if (messages.length === 0) return null;
+
+  const id = String(raw.id ?? "").trim() || fallbackId;
+  const status = VALID_THREAD_STATUSES.has(raw.status) ? raw.status : "draft";
+  const filePath = raw.filePath ? normalizeRepoPath(raw.filePath) : "";
+  const sliceId = String(raw.sliceId ?? "").trim();
+  const lineNumber = Number.isFinite(Number(raw.lineNumber)) && Number(raw.lineNumber) > 0 ? Number(raw.lineNumber) : null;
+  const lineRange = String(raw.lineRange ?? (lineNumber ? `L${lineNumber}` : "")).trim();
+  const codeExcerpt = typeof raw.codeExcerpt === "string" ? raw.codeExcerpt.replace(/\r\n/g, "\n").trimEnd() : "";
+
+  const createdParsed = raw.createdAt ? Date.parse(String(raw.createdAt)) : NaN;
+  const createdAt = Number.isFinite(createdParsed) ? new Date(createdParsed).toISOString() : messages[0].timestamp;
+  const updatedParsed = raw.updatedAt ? Date.parse(String(raw.updatedAt)) : NaN;
+  const updatedAt = Number.isFinite(updatedParsed)
+    ? new Date(updatedParsed).toISOString()
+    : messages[messages.length - 1].timestamp;
+
+  const thread = {
+    id,
+    status,
+    createdAt,
+    updatedAt,
+    messages,
+  };
+  if (sliceId) thread.sliceId = sliceId;
+  if (filePath) thread.filePath = filePath;
+  if (lineNumber !== null) thread.lineNumber = lineNumber;
+  if (lineRange) thread.lineRange = lineRange;
+  if (codeExcerpt) thread.codeExcerpt = codeExcerpt;
+  return thread;
+}
+
+export function normalizeOverview(raw) {
+  if (!raw) return null;
+  if (typeof raw === "string") {
+    const text = raw.replace(/\r\n/g, "\n").trim();
+    if (!text) return null;
+    return {
+      text,
+      updatedAt: new Date(0).toISOString(),
+    };
+  }
+  if (typeof raw !== "object") return null;
+  const text = String(raw.text ?? raw.summary ?? "").replace(/\r\n/g, "\n").trim();
+  if (!text) return null;
+  const agentName = String(raw.agentName ?? raw.agent ?? "").trim();
+  const parsedTime = raw.updatedAt ? Date.parse(String(raw.updatedAt)) : NaN;
+  const updatedAt = Number.isFinite(parsedTime) ? new Date(parsedTime).toISOString() : new Date(0).toISOString();
+  return {
+    text,
+    ...(agentName ? { agentName } : {}),
+    updatedAt,
+  };
+}
+
+export function normalizeSuggestedCommit(raw) {
+  if (!raw) return null;
+  if (typeof raw === "string") {
+    const trimmed = raw.trim();
+    if (!trimmed) return null;
+    const [first, ...rest] = trimmed.split(/\r?\n/);
+    const body = rest.join("\n").trim();
+    return {
+      subject: first.trim(),
+      ...(body ? { body } : {}),
+      updatedAt: new Date(0).toISOString(),
+    };
+  }
+  if (typeof raw !== "object") return null;
+  const subject = String(raw.subject ?? raw.message ?? "").replace(/\s+/g, " ").trim();
+  if (!subject) return null;
+  const body = typeof raw.body === "string" ? raw.body.replace(/\r\n/g, "\n").trim() : "";
+  const agentName = String(raw.agentName ?? "").trim();
+  const parsedTime = raw.updatedAt ? Date.parse(String(raw.updatedAt)) : NaN;
+  const updatedAt = Number.isFinite(parsedTime) ? new Date(parsedTime).toISOString() : new Date(0).toISOString();
+  return {
+    subject,
+    ...(body ? { body } : {}),
+    ...(agentName ? { agentName } : {}),
+    updatedAt,
+  };
+}
+
+export function emptyReviewDocument() {
+  return {
+    version: 2,
+    overview: null,
+    suggestedCommit: null,
+    slices: [],
+    threads: [],
+  };
+}
+
+/**
+ * Parses a v2 `herdr-review.json` document (or migrates v1 `notes` seamlessly).
+ */
+export function parseReviewDocument(jsonText, legacyNotesText = "") {
+  const source = jsonText && String(jsonText).trim() ? String(jsonText) : String(legacyNotesText ?? "");
+  if (!source.trim()) return emptyReviewDocument();
+
   try {
-    const parsed = JSON.parse(String(jsonText));
-    const list = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.notes) ? parsed.notes : [];
-    const seen = new Set();
-    const notes = [];
-    for (let i = 0; i < list.length; i++) {
-      const normalized = normalizeAgentNote(list[i], `note-${i + 1}`);
-      if (!normalized || seen.has(normalized.id)) continue;
-      seen.add(normalized.id);
-      notes.push(normalized);
+    const parsed = JSON.parse(source);
+
+    // Migrate v1 `{ notes: [...] }` or bare note array into 1-file Slices
+    if (Array.isArray(parsed) || (Array.isArray(parsed?.notes) && !Array.isArray(parsed?.slices))) {
+      const rawNotes = Array.isArray(parsed) ? parsed : parsed.notes;
+      const slices = [];
+      for (let i = 0; i < rawNotes.length; i++) {
+        const n = rawNotes[i];
+        const s = normalizeSlice(
+          {
+            id: n?.id || `s-${i + 1}`,
+            title: n?.summary ?? n?.title,
+            agentName: n?.agentName ?? n?.agent,
+            timestamp: n?.timestamp,
+            order: i + 1,
+            files: [
+              {
+                filePath: n?.filePath ?? n?.path,
+                lineRange: n?.lineRange ?? n?.lines,
+                diffHunk: n?.diffHunk ?? n?.diff,
+              },
+            ],
+          },
+          `s-${i + 1}`,
+          i + 1,
+        );
+        if (s) slices.push(s);
+      }
+      return {
+        version: 2,
+        overview: null,
+        suggestedCommit: null,
+        slices,
+        threads: [],
+      };
     }
-    notes.sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
-    return notes;
+
+    const slices = [];
+    const seenSlices = new Set();
+    const rawSlices = Array.isArray(parsed?.slices) ? parsed.slices : [];
+    for (let i = 0; i < rawSlices.length; i++) {
+      const s = normalizeSlice(rawSlices[i], `s-${i + 1}`, i + 1);
+      if (!s || seenSlices.has(s.id)) continue;
+      seenSlices.add(s.id);
+      slices.push(s);
+    }
+    slices.sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || Date.parse(a.timestamp) - Date.parse(b.timestamp));
+
+    const threads = [];
+    const seenThreads = new Set();
+    const rawThreads = Array.isArray(parsed?.threads) ? parsed.threads : [];
+    for (let i = 0; i < rawThreads.length; i++) {
+      const th = normalizeThread(rawThreads[i], `t-${i + 1}`);
+      if (!th || seenThreads.has(th.id)) continue;
+      seenThreads.add(th.id);
+      threads.push(th);
+    }
+
+    const overview = normalizeOverview(parsed?.overview);
+    const suggestedCommit = normalizeSuggestedCommit(parsed?.suggestedCommit);
+    return {
+      version: 2,
+      overview,
+      suggestedCommit,
+      slices,
+      threads,
+    };
   } catch {
-    return [];
+    return emptyReviewDocument();
   }
 }
 
-export function serializeNotesDocument(notes) {
-  const clean = [];
-  const seen = new Set();
-  for (let i = 0; i < (notes ?? []).length; i++) {
-    const normalized = normalizeAgentNote(notes[i], `note-${i + 1}`);
-    if (!normalized || seen.has(normalized.id)) continue;
-    seen.add(normalized.id);
-    clean.push(normalized);
-  }
-  clean.sort((a, b) => Date.parse(b.timestamp) - Date.parse(a.timestamp));
-  return `${JSON.stringify({ version: 1, notes: clean }, null, 2)}\n`;
+export function serializeReviewDocument(doc) {
+  const normalized = parseReviewDocument(JSON.stringify(doc ?? emptyReviewDocument()));
+  return `${JSON.stringify(normalized, null, 2)}\n`;
 }
 
-export function appendNoteToDocument(jsonText, input, { nowIso = new Date().toISOString(), createId = () => `n-${Date.now()}` } = {}) {
-  const existing = parseNotesDocument(jsonText);
-  const candidate = normalizeAgentNote(
+export function upsertSlicesInDocument(
+  docText,
+  {
+    slices: incomingSlices = [],
+    overview = undefined,
+    suggestedCommit = undefined,
+    replaceAll = false,
+    nowIso = new Date().toISOString(),
+    createId = () => `s-${Date.now()}`,
+  } = {},
+) {
+  const doc = parseReviewDocument(docText);
+  const baseList = replaceAll ? [] : [...doc.slices];
+  const upserted = [];
+
+  for (let i = 0; i < incomingSlices.length; i++) {
+    const raw = incomingSlices[i];
+    const matchIdx = baseList.findIndex(
+      (existing) =>
+        (raw?.id && existing.id === raw.id) ||
+        (!raw?.id && raw?.title && existing.title.toLowerCase() === String(raw.title).trim().toLowerCase()),
+    );
+    const prev = matchIdx >= 0 ? baseList[matchIdx] : null;
+    const normalized = normalizeSlice(
+      {
+        ...prev,
+        ...raw,
+        id: raw?.id || prev?.id || createId(),
+        timestamp: raw?.timestamp || nowIso,
+        order: raw?.order ?? prev?.order ?? baseList.length + i + 1,
+      },
+      createId(),
+      baseList.length + i + 1,
+    );
+    if (!normalized) continue;
+    if (matchIdx >= 0) baseList[matchIdx] = normalized;
+    else baseList.push(normalized);
+    upserted.push(normalized);
+  }
+
+  let nextOverview = doc.overview;
+  if (overview === null) {
+    nextOverview = null;
+  } else if (overview !== undefined) {
+    nextOverview = normalizeOverview(
+      typeof overview === "string"
+        ? { text: overview, updatedAt: nowIso }
+        : { ...overview, updatedAt: overview.updatedAt || nowIso },
+    );
+  }
+
+  let nextCommit = doc.suggestedCommit;
+  if (suggestedCommit === null) {
+    nextCommit = null;
+  } else if (suggestedCommit !== undefined) {
+    nextCommit = normalizeSuggestedCommit(
+      typeof suggestedCommit === "string"
+        ? { subject: suggestedCommit, updatedAt: nowIso }
+        : { ...suggestedCommit, updatedAt: suggestedCommit.updatedAt || nowIso },
+    );
+  }
+
+  const nextDoc = {
+    version: 2,
+    overview: nextOverview,
+    suggestedCommit: nextCommit,
+    slices: baseList,
+    threads: doc.threads,
+  };
+  return {
+    upserted,
+    doc: nextDoc,
+    text: serializeReviewDocument(nextDoc),
+  };
+}
+
+export function removeSliceFromDocument(docText, sliceId) {
+  const doc = parseReviewDocument(docText);
+  const nextSlices = doc.slices.filter((s) => s.id !== sliceId);
+  const nextDoc = { ...doc, slices: nextSlices };
+  return {
+    removed: doc.slices.length - nextSlices.length,
+    doc: nextDoc,
+    text: serializeReviewDocument(nextDoc),
+  };
+}
+
+export function addCommentToDocument(
+  docText,
+  {
+    threadId = "",
+    sliceId = "",
+    filePath = "",
+    lineNumber = null,
+    lineRange = "",
+    codeExcerpt = "",
+    author = "you",
+    role = "user",
+    body = "",
+    status = undefined,
+  } = {},
+  {
+    nowIso = new Date().toISOString(),
+    createId = () => `t-${Date.now()}`,
+  } = {},
+) {
+  const trimmedBody = String(body ?? "").trim();
+  if (!trimmedBody) throw new Error("Comment body cannot be empty.");
+
+  const doc = parseReviewDocument(docText);
+  const threads = [...doc.threads];
+  const msg = normalizeReviewMessage(
     {
-      ...input,
-      id: input?.id || createId(),
-      timestamp: input?.timestamp || nowIso,
+      id: `m-${createId()}`,
+      author,
+      role,
+      body: trimmedBody,
+      timestamp: nowIso,
     },
-    createId(),
+    `m-${Date.now()}`,
   );
-  if (!candidate) {
-    throw new Error("AgentChangeNote requires both filePath and summary.");
+
+  let targetThread = null;
+  if (threadId) {
+    const idx = threads.findIndex((t) => t.id === threadId);
+    if (idx >= 0) {
+      const existing = threads[idx];
+      const nextStatus =
+        status && VALID_THREAD_STATUSES.has(status)
+          ? status
+          : role === "agent"
+            ? "addressed"
+            : "draft";
+      targetThread = {
+        ...existing,
+        status: nextStatus,
+        updatedAt: nowIso,
+        messages: [...existing.messages, msg],
+      };
+      threads[idx] = targetThread;
+    }
   }
-  const filtered = existing.filter((n) => n.id !== candidate.id);
-  const next = [candidate, ...filtered];
+
+  if (!targetThread) {
+    const nextStatus = status && VALID_THREAD_STATUSES.has(status) ? status : role === "agent" ? "addressed" : "draft";
+    targetThread = normalizeThread(
+      {
+        id: threadId || createId(),
+        sliceId,
+        filePath,
+        lineNumber,
+        lineRange,
+        codeExcerpt,
+        status: nextStatus,
+        createdAt: nowIso,
+        updatedAt: nowIso,
+        messages: [msg],
+      },
+      createId(),
+    );
+    threads.push(targetThread);
+  }
+
+  const nextDoc = { ...doc, threads };
   return {
-    note: candidate,
-    notes: next,
-    text: serializeNotesDocument(next),
+    thread: targetThread,
+    doc: nextDoc,
+    text: serializeReviewDocument(nextDoc),
   };
 }
 
-export function removeNoteFromDocument(jsonText, noteId) {
-  const existing = parseNotesDocument(jsonText);
-  const next = existing.filter((n) => n.id !== noteId);
+export function setThreadStatusInDocument(docText, threadId, status, nowIso = new Date().toISOString()) {
+  if (!VALID_THREAD_STATUSES.has(status)) throw new Error(`Invalid thread status: ${status}`);
+  const doc = parseReviewDocument(docText);
+  let updated = false;
+  const threads = doc.threads.map((t) => {
+    if (t.id !== threadId) return t;
+    updated = true;
+    return { ...t, status, updatedAt: nowIso };
+  });
+  const nextDoc = { ...doc, threads };
   return {
-    removed: existing.length - next.length,
-    notes: next,
-    text: serializeNotesDocument(next),
+    updated,
+    doc: nextDoc,
+    text: serializeReviewDocument(nextDoc),
   };
 }
 
-export function clearNotesInDocument(jsonText, { filePath = null, keepPaths = null } = {}) {
-  const existing = parseNotesDocument(jsonText);
-  let next = [];
-  if (keepPaths instanceof Set) {
-    next = existing.filter((n) => keepPaths.has(n.filePath));
-  } else if (filePath) {
-    const target = normalizeRepoPath(filePath);
-    next = existing.filter((n) => n.filePath !== target);
-  }
+export function deleteThreadFromDocument(docText, threadId) {
+  const doc = parseReviewDocument(docText);
+  const threads = doc.threads.filter((t) => t.id !== threadId);
+  const nextDoc = { ...doc, threads };
   return {
-    removed: existing.length - next.length,
-    notes: next,
-    text: serializeNotesDocument(next),
+    removed: doc.threads.length - threads.length,
+    doc: nextDoc,
+    text: serializeReviewDocument(nextDoc),
   };
 }
 
-export function groupNotesByFile(notes) {
-  const map = new Map();
-  for (const note of notes ?? []) {
-    const path = normalizeRepoPath(note.filePath);
-    if (!path) continue;
-    const bucket = map.get(path);
-    if (bucket) bucket.push(note);
-    else map.set(path, [note]);
-  }
-  return map;
+export function promoteDraftThreadsToOpen(docText, nowIso = new Date().toISOString()) {
+  const doc = parseReviewDocument(docText);
+  let promotedCount = 0;
+  const threads = doc.threads.map((t) => {
+    if (t.status !== "draft") return t;
+    promotedCount += 1;
+    return { ...t, status: "open", updatedAt: nowIso };
+  });
+  const openThreads = threads.filter((t) => t.status === "open");
+  const nextDoc = { ...doc, threads };
+  return {
+    promotedCount,
+    openThreads,
+    doc: nextDoc,
+    text: serializeReviewDocument(nextDoc),
+  };
 }
 
-export function filterFiles(files, notesByFile, { filter = "ALL", query = "" } = {}) {
-  const normalizedFilter = String(filter || "ALL").toUpperCase();
+export function pruneCleanStateInDocument(docText, dirtyPathsSet, { dropResolvedThreads = true } = {}) {
+  const doc = parseReviewDocument(docText);
+  const keep = dirtyPathsSet instanceof Set ? dirtyPathsSet : new Set(dirtyPathsSet ?? []);
+
+  const slices = [];
+  let removedSlices = 0;
+  for (const s of doc.slices) {
+    const remainingFiles = s.files.filter((f) => keep.has(f.filePath));
+    if (remainingFiles.length > 0) {
+      slices.push({ ...s, files: remainingFiles });
+    } else {
+      removedSlices += 1;
+    }
+  }
+
+  const threads = doc.threads.filter((t) => {
+    if (t.status === "resolved" && dropResolvedThreads) return false;
+    if (t.filePath && !keep.has(t.filePath) && t.status === "resolved") return false;
+    return true;
+  });
+
+  const nextDoc = {
+    version: 2,
+    overview: keep.size === 0 ? null : doc.overview,
+    suggestedCommit: keep.size === 0 ? null : doc.suggestedCommit,
+    slices,
+    threads,
+  };
+  return {
+    removedSlices,
+    removedThreads: doc.threads.length - threads.length,
+    doc: nextDoc,
+    text: serializeReviewDocument(nextDoc),
+  };
+}
+
+// ============================================================================
+// VIEW BUILDERS: BY-SLICE GROUPS (WITH UNATTRIBUTED TRUST BUCKET) & BY-FILE
+// ============================================================================
+
+export function countActiveReviewThreads(threads = []) {
+  let draft = 0, open = 0, addressed = 0, resolved = 0;
+  for (const t of threads) {
+    if (t.status === "draft") draft += 1;
+    else if (t.status === "open") open += 1;
+    else if (t.status === "addressed") addressed += 1;
+    else if (t.status === "resolved") resolved += 1;
+  }
+  return {
+    draft,
+    open,
+    addressed,
+    resolved,
+    actionableForSubmit: draft + open,
+    unresolvedTotal: draft + open,
+  };
+}
+
+function threadMatchesQuery(thread, q) {
+  if (!q) return true;
+  if (thread.filePath && thread.filePath.toLowerCase().includes(q)) return true;
+  return thread.messages.some(
+    (m) => m.body.toLowerCase().includes(q) || m.author.toLowerCase().includes(q),
+  );
+}
+
+/**
+ * Builds logical Slice review cards over live `gitFiles`, guaranteeing 100% visibility of all
+ * uncommitted changes by placing any unclaimed files into an `Unattributed Changes` bucket.
+ */
+export function buildSliceGroups(gitFiles = [], slices = [], threads = [], { filter = "ALL", query = "" } = {}) {
+  const fileMap = new Map(gitFiles.map((f) => [f.path, f]));
+  const claimedPaths = new Set();
+  const rawGroups = [];
+
+  for (const slice of slices) {
+    const items = [];
+    for (const sf of slice.files) {
+      const liveFile = fileMap.get(sf.filePath);
+      if (!liveFile) continue;
+      claimedPaths.add(sf.filePath);
+      const itemThreads = threads.filter(
+        (t) => t.filePath === sf.filePath && (!t.sliceId || t.sliceId === slice.id),
+      );
+      items.push({
+        filePath: sf.filePath,
+        gitFile: liveFile,
+        summary: sf.summary || "",
+        lineRange: sf.lineRange || "",
+        diffHunk: sf.diffHunk || "",
+        threads: itemThreads,
+      });
+    }
+
+    const sliceLevelThreads = threads.filter((t) => t.sliceId === slice.id && !t.filePath);
+    if (items.length === 0 && sliceLevelThreads.filter((t) => t.status !== "resolved").length === 0) {
+      continue;
+    }
+
+    rawGroups.push(createSliceGroupRecord(slice, items, sliceLevelThreads, false));
+  }
+
+  // Trust invariant: collect every dirty file in `git status` not claimed by any active Slice
+  const unattributedFiles = gitFiles.filter((f) => !claimedPaths.has(f.path));
+  if (unattributedFiles.length > 0) {
+    const items = unattributedFiles.map((liveFile) => ({
+      filePath: liveFile.path,
+      gitFile: liveFile,
+      summary: "",
+      lineRange: "",
+      diffHunk: "",
+      threads: threads.filter((t) => t.filePath === liveFile.path),
+    }));
+    rawGroups.push(
+      createSliceGroupRecord(
+        {
+          id: UNATTRIBUTED_SLICE_ID,
+          title: "Unattributed / Manual Changes",
+          rationale: "Modified files in git status not yet grouped into an agent change slice.",
+          timestamp: new Date(0).toISOString(),
+        },
+        items,
+        threads.filter((t) => t.sliceId === UNATTRIBUTED_SLICE_ID && !t.filePath),
+        true,
+      ),
+    );
+  }
+
+  const normFilter = String(filter || "ALL").toUpperCase();
   const q = String(query ?? "").trim().toLowerCase();
 
-  return (files ?? []).filter((file) => {
-    const fileNotes = notesByFile instanceof Map ? notesByFile.get(file.path) ?? [] : [];
-    if (normalizedFilter === "STAGED" && !file.hasStaged) return false;
-    if (normalizedFilter === "UNSTAGED" && !file.hasUnstaged) return false;
-    if (normalizedFilter === "NOTES" && fileNotes.length === 0) return false;
+  return rawGroups.filter((group) => {
+    if (normFilter === "STAGED" && !group.hasStaged) return false;
+    if (normFilter === "UNSTAGED" && !group.hasUnstaged) return false;
+    if (normFilter === "OPEN" && group.activeThreadCount === 0) return false;
 
     if (!q) return true;
-    if (file.path.toLowerCase().includes(q)) return true;
-    if (file.origPath && file.origPath.toLowerCase().includes(q)) return true;
-
-    return fileNotes.some(
-      (n) =>
-        n.summary.toLowerCase().includes(q) ||
-        (n.agentName && n.agentName.toLowerCase().includes(q)) ||
-        (n.lineRange && n.lineRange.toLowerCase().includes(q)),
+    if (group.title.toLowerCase().includes(q)) return true;
+    if (group.rationale && group.rationale.toLowerCase().includes(q)) return true;
+    if (group.agentName && group.agentName.toLowerCase().includes(q)) return true;
+    if (group.sliceThreads.some((t) => threadMatchesQuery(t, q))) return true;
+    return group.items.some(
+      (item) =>
+        item.filePath.toLowerCase().includes(q) ||
+        (item.summary && item.summary.toLowerCase().includes(q)) ||
+        item.threads.some((t) => threadMatchesQuery(t, q)),
     );
   });
 }
 
-export function computeFooterCounts(files, notesByFile) {
-  let staged = 0;
-  let unstaged = 0;
-  let notes = 0;
-  for (const f of files ?? []) {
-    if (f.hasStaged) staged += 1;
-    if (f.hasUnstaged) unstaged += 1;
-    if (notesByFile instanceof Map) {
-      notes += (notesByFile.get(f.path) ?? []).length;
+function createSliceGroupRecord(slice, items, sliceThreads, isUnattributed) {
+  const gitFiles = items.map((i) => i.gitFile).filter(Boolean);
+  const additions = gitFiles.reduce((acc, f) => acc + (f.additions || 0), 0);
+  const deletions = gitFiles.reduce((acc, f) => acc + (f.deletions || 0), 0);
+  const hasStaged = gitFiles.some((f) => f.hasStaged);
+  const hasUnstaged = gitFiles.some((f) => f.hasUnstaged);
+  const staged = gitFiles.length > 0 && gitFiles.every((f) => f.staged);
+  const partiallyStaged = hasStaged && hasUnstaged;
+
+  const seenThreadIds = new Set();
+  const allThreads = [];
+  for (const t of [...sliceThreads, ...items.flatMap((i) => i.threads)]) {
+    if (!seenThreadIds.has(t.id)) {
+      seenThreadIds.add(t.id);
+      allThreads.push(t);
     }
   }
-  return { staged, unstaged, notes };
+  const activeThreadCount = allThreads.filter((t) => t.status !== "resolved").length;
+
+  return {
+    id: slice.id,
+    title: slice.title,
+    rationale: slice.rationale || "",
+    agentName: slice.agentName || "",
+    timestamp: slice.timestamp,
+    isUnattributed,
+    items,
+    gitFiles,
+    sliceThreads,
+    allThreads,
+    activeThreadCount,
+    additions,
+    deletions,
+    hasStaged,
+    hasUnstaged,
+    staged,
+    partiallyStaged,
+  };
+}
+
+export function filterFilesForReview(gitFiles = [], slices = [], threads = [], { filter = "ALL", query = "" } = {}) {
+  const normFilter = String(filter || "ALL").toUpperCase();
+  const q = String(query ?? "").trim().toLowerCase();
+
+  return gitFiles.filter((file) => {
+    const fileThreads = threads.filter((t) => t.filePath === file.path);
+    const activeThreads = fileThreads.filter((t) => t.status !== "resolved");
+    if (normFilter === "STAGED" && !file.hasStaged) return false;
+    if (normFilter === "UNSTAGED" && !file.hasUnstaged) return false;
+    if (normFilter === "OPEN" && activeThreads.length === 0) return false;
+
+    if (!q) return true;
+    if (file.path.toLowerCase().includes(q)) return true;
+    if (fileThreads.some((t) => threadMatchesQuery(t, q))) return true;
+    const matchingSlices = slices.filter((s) => s.files.some((sf) => sf.filePath === file.path));
+    return matchingSlices.some(
+      (s) =>
+        s.title.toLowerCase().includes(q) ||
+        (s.rationale && s.rationale.toLowerCase().includes(q)) ||
+        s.files.some((sf) => sf.filePath === file.path && sf.summary && sf.summary.toLowerCase().includes(q)),
+    );
+  });
+}
+
+// ============================================================================
+// REVIEW DISPATCH PROMPT & COMMIT SUGGESTION HELPERS
+// ============================================================================
+
+export function formatReviewDispatchPrompt(threads = [], slices = []) {
+  const active = threads.filter((t) => t.status === "open" || t.status === "draft");
+  if (active.length === 0) return "";
+
+  const sliceTitleById = new Map(slices.map((s) => [s.id, s.title]));
+  const lines = [
+    `Code review feedback (${active.length} comment${active.length === 1 ? "" : "s"}) from Herdr Git Review:`,
+    "",
+  ];
+
+  for (let i = 0; i < active.length; i++) {
+    const t = active[i];
+    const targetParts = [];
+    if (t.filePath) targetParts.push(`\`${t.filePath}\``);
+    if (t.lineRange) targetParts.push(`(${t.lineRange})`);
+    if (t.sliceId && sliceTitleById.has(t.sliceId)) {
+      targetParts.push(`— Slice: "${sliceTitleById.get(t.sliceId)}"`);
+    }
+    const headerTarget = targetParts.length ? targetParts.join(" ") : "General";
+    lines.push(`${i + 1}. [Thread \`${t.id}\`] ${headerTarget}`);
+    if (t.codeExcerpt) {
+      lines.push(`   Code: \`${t.codeExcerpt.replace(/\s+/g, " ").trim().slice(0, 140)}\``);
+    }
+    for (const m of t.messages) {
+      lines.push(`   - ${m.role === "agent" ? `Agent (${m.author})` : "Reviewer"}: ${m.body}`);
+    }
+    lines.push("");
+  }
+
+  lines.push(
+    "Please address each review thread above, reply to each `threadId` using `review_threads` (`action: \"reply\"`, `status: \"addressed\"`), and keep `record_change_slices` + `suggestedCommit` updated.",
+  );
+  return lines.join("\n");
+}
+
+export function deriveOverviewInfo({ files = [], slices = [], overview = null } = {}) {
+  const additions = files.reduce((acc, f) => acc + (f.additions || 0), 0);
+  const deletions = files.reduce((acc, f) => acc + (f.deletions || 0), 0);
+
+  if (overview?.text) {
+    return {
+      text: overview.text,
+      agentName: overview.agentName || "",
+      updatedAt: overview.updatedAt || "",
+      synthesized: false,
+      additions,
+      deletions,
+    };
+  }
+
+  if (!files.length) return null;
+
+  const dirtyPaths = new Set(files.map((f) => f.path));
+  const activeSlices = slices.filter((s) => s.files.some((sf) => dirtyPaths.has(sf.filePath)));
+  if (activeSlices.length === 1) {
+    const s = activeSlices[0];
+    return {
+      text: s.rationale ? `${s.title} — ${s.rationale}` : s.title,
+      agentName: s.agentName || "",
+      updatedAt: s.timestamp || "",
+      synthesized: true,
+      additions,
+      deletions,
+    };
+  }
+  if (activeSlices.length > 1) {
+    return {
+      text: activeSlices.map((s, i) => `${i + 1}. ${s.title}`).join(" · "),
+      agentName: activeSlices[0].agentName || "",
+      updatedAt: activeSlices[0].timestamp || "",
+      synthesized: true,
+      additions,
+      deletions,
+    };
+  }
+
+  return {
+    text: `${files.length} uncommitted file${files.length === 1 ? "" : "s"} in working tree — no agent summary recorded yet.`,
+    agentName: "",
+    updatedAt: "",
+    synthesized: true,
+    additions,
+    deletions,
+  };
+}
+
+export function deriveCommitSuggestion({ files = [], slices = [], suggestedCommit = null } = {}) {
+  if (!files.length) return { subject: "", body: "" };
+
+  const stagedFiles = files.filter((f) => f.hasStaged);
+  const targetPaths = new Set((stagedFiles.length > 0 ? stagedFiles : files).map((f) => f.path));
+
+  // If user staged a specific subset that cleanly matches a subset of slices, scope the suggestion to those slices
+  if (stagedFiles.length > 0 && stagedFiles.length < files.length && slices.length > 1) {
+    const matchingSlices = slices.filter((s) => s.files.some((sf) => targetPaths.has(sf.filePath)));
+    if (matchingSlices.length === 1) {
+      return {
+        subject: matchingSlices[0].title,
+        body: matchingSlices[0].rationale || "",
+      };
+    }
+    if (matchingSlices.length > 1 && matchingSlices.length < slices.length) {
+      return {
+        subject: matchingSlices[0].title,
+        body: matchingSlices.map((s) => `- ${s.title}`).join("\n"),
+      };
+    }
+  }
+
+  if (suggestedCommit?.subject) {
+    return {
+      subject: suggestedCommit.subject,
+      body: suggestedCommit.body || "",
+    };
+  }
+
+  const activeSlices = slices.filter((s) => s.files.some((sf) => targetPaths.has(sf.filePath)));
+  if (activeSlices.length === 1) {
+    return {
+      subject: activeSlices[0].title,
+      body: activeSlices[0].rationale || "",
+    };
+  }
+  if (activeSlices.length > 1) {
+    return {
+      subject: activeSlices[0].title,
+      body: activeSlices.map((s) => `- ${s.title}`).join("\n"),
+    };
+  }
+
+  const names = [...targetPaths].slice(0, 3).map((p) => splitFilePath(p).name);
+  const more = targetPaths.size > 3 ? ` (+${targetPaths.size - 3} more)` : "";
+  return {
+    subject: `Update ${names.join(", ")}${more}`,
+    body: "",
+  };
+}
+
+export function buildGitCommitCommands({ subject, body = "", hasStagedFiles = false } = {}) {
+  const cleanSubject = String(subject ?? "").trim();
+  if (!cleanSubject) return [];
+  const cleanBody = String(body ?? "").trim();
+  const commitArgs = ["commit", "-m", cleanSubject];
+  if (cleanBody) commitArgs.push("-m", cleanBody);
+  return hasStagedFiles ? [commitArgs] : [["add", "-A"], commitArgs];
+}
+
+export function computeFooterCounts(files = [], slices = [], threads = []) {
+  let staged = 0;
+  let unstaged = 0;
+  for (const f of files) {
+    if (f.hasStaged) staged += 1;
+    if (f.hasUnstaged) unstaged += 1;
+  }
+  const threadStats = countActiveReviewThreads(threads);
+  return {
+    staged,
+    unstaged,
+    slices: slices.length,
+    ...threadStats,
+  };
 }
 
 export function formatRelativeTime(isoTimestamp, nowMs = Date.now()) {

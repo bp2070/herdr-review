@@ -1,43 +1,41 @@
-# Git Changes & Agent Notes
+# Git Review
 
-A standard, movable Herdr workspace pane (`mods/git-status`) that shows uncommitted Git changes, staged/unstaged/untracked diffs, and discrete per-file coding-agent change notes in the active space.
+A movable Herdr workspace pane (`mods/git-status`) for reviewing uncommitted changes as logical multi-file **Change Slices**, holding back-and-forth inline review threads with live coding agents, and committing with pre-drafted commit messages.
 
 ## What you see
 
-Top to bottom inside a crisp 1px-bordered Catppuccin Mocha / theme-aware pane:
+Top to bottom inside a 1px-bordered Catppuccin Mocha / theme-aware pane:
 
-1. **Toolbar (36px)** on subtle raised surface (`surface0` at 40% alpha): mauve compare-arrows glyph, **Git Changes & Notes** title, changed-file count pill, teal git-branch badge, mauve **+ Note** button, expand/collapse-all button, stage/unstage-all button, and spinning refresh button.
-2. **Filter & Search Bar (37px)**: compact monospace search input (`Filter file or note...`) on the left and a 4-way segmented pill toggle (`All`, `Staged`, `Unstaged`, `Notes`) on the right.
-3. **Scrollable File & Agent Note Tree**:
-   - **File Row (28px)**: expand chevron, interactive stage checkbox (green check when staged, yellow minus when partially staged, dim square when unstaged), colored status badge (`M` yellow, `A` green, `D`/`U` red, `R` blue), dim directory prefix + bold filename, `+add/-del` line counts, and a mauve sparkles note-count pill (`✦ N`).
-   - **Expanded File Body**: indented behind a 1px vertical tree guide line:
-     - Discrete **Agent Note Cards** showing a mauve bullet, 1-line summary, `<>` code indicator, line-range badge (`L24-L31`), agent tag (`pi`), relative timestamp (`2m ago`), and `×` delete control. Clicking a note with a `diffHunk` expands an inset syntax-colored diff block. Files without notes show *Manual edit — no discrete agent notes.* with a `+ Note` button.
-     - Collapsible **Full Git Diff** bar that loads and renders staged + unstaged unified diff hunks (or untracked file previews) with line numbers.
-4. **Footer Status Bar (24px)** on `canvas` (`#11111b`): `Staged: N • Unstaged: M` on the left and `Notes: K` (plus a one-click `Prune clean` link when committed notes remain) on the right.
+1. **Header (36px)**: mauve compare-arrows icon, **`Slices | Files`** mode switch, teal git-branch badge, mauve **`+ Slice`** button, **`Commit…`** dialog launcher (showing staged count when staged > 0 and an amber warning icon when unresolved comments exist), expand/collapse-all, stage/unstage-all, and spinning refresh.
+2. **Overall Summary Card**: collapsible top card showing sparkles icon, total file/slice/diff stats, agent timestamp, and a concise high-level summary of the entire changeset (synthesizing from active slices if not explicitly set).
+3. **Search & Filter Bar (36px)**: monospace search input (`Filter slice, file, comment...`) and 4-way filter pills (`All`, `Staged`, `Unstaged`, `Open`).
+4. **Inline Slice Accordion**:
+   - **Slice Card**: expand chevron, slice-level stage checkbox (green check / yellow minus / dim square), `Slice N` badge (or `Unattributed` for unclaimed edits), bold headline, active comment badge, file count (`3f`), `+add/-del`, slice comment button, and delete `×`.
+   - **Expanded Slice**: indented behind a 1px guide line with optional rationale + agent timestamp, per-file rows (click to expand slice diff hunk or toggle **Show Full File Diff**), and clickable diff lines (`+`) that open an inline **Add Draft** comment box and render `Draft` / `Open` / `Addressed` / `Resolved` conversation threads.
+5. **Sticky Review Dispatch Bar** *(when active comments exist)*: thread counts, agent picker (`→ pi (t9t)`), **`Copy`** fallback, and **`Submit Review → pi (N)`**.
+6. **Status Footer (22px)**: `Staged: N • Unstaged: M`, resolved-thread toggle, and `Slices: K`.
+7. **Commit Changes Dialog (`role: "commit"`)**: opened via **`Commit…`** or `c`, with `Staged only` / `All files` scope toggle, non-blocking unresolved-comment warning badge, pre-filled subject + body inputs, `↺ Reset to Suggested`, and **`Commit Staged (N)`** / **`Stage & Commit (M)`**.
 
 ## How it behaves
 
-- `Alt+Shift+G` (`mod.open:git-status`) splits `git-status` to the right of the active tab's focused pane, or closes the pane if one is already open in the active tab.
-- As a native tab pane, Herdr's top-center drag grip moves or docks it on any split edge, `pane.zoom` zooms it, and `pane.go` focuses it for keyboard navigation (`j`/`k`, `Enter`, `s`, `d`, `n`, `/`, `r`).
-- Clicking **+ Note** opens a 470×455 dialog with changed-file quick-pick chips, single-line summary, agent tag, line range, **Prefill Diff** button, and monospace diff textarea.
-- Notes are stored in `<git-dir>/herdr-agent-notes.json` via atomic compare-and-swap writes so `git status` stays clean and linked worktrees keep isolated notes.
+- `Alt+Shift+G` (`mod.open:git-status`) toggles the split pane in the active tab.
+- Every dirty file in `git status` not claimed by a slice appears automatically in **Unattributed / Manual Changes**.
+- Clicking any diff line queues a `Draft` comment; clicking **Submit Review** promotes drafts to `Open` and sends a structured prompt via `hc send` to the space's agent terminal (falling back to clipboard if busy/absent).
+- Committing runs `git commit` on staged changes (or `git add -A && git commit` when nothing is staged) and prunes clean slices and resolved threads.
 
 ## Built from
 
-- `mods/git-status/mod.json`: `{"place":"none","title":"Git Changes & Notes","focusable":true,"overlay":{"kind":"popup","frame":"none","width":1,"height":1}}`.
-- `mods/git-status/main.js` & `mods/git-status/model.js`: uses `herdr`'s `spaces`, `panes`, `focused`, `agents`, `exec`, `readTextFile`, `writeTextFile`, `watchFolder`, `openOverlay`, `closeOverlay`, `run`, `shared`, `setShared`, `nextCommand`, `checking`, `theme`, and `settings`.
-- `bin/herdr-git-note.mjs` & `src/notes-store.js`: Node CLI for agents to append/list/remove/clear notes in `<git-dir>/herdr-agent-notes.json`.
+- `mods/git-status/mod.json`, `mods/git-status/main.js`, `mods/git-status/model.js`, and vector icons in `mods/git-status/*.svg`.
+- `extensions/herdr-git-notes/index.ts`, `src/notes-store.js`, and `bin/herdr-git-note.mjs` persisting `<git-dir>/herdr-review.json`.
 
 ## Watch out
 
-- Always pass `--no-optional-locks -c core.fsmonitor=false -c diff.autoRefreshIndex=false` to read-only `git` invocations; otherwise `git status` touches `.git/index` and re-triggers `watchFolder` in an infinite loop.
-- When a user clicks inside a mod pane, `focused().cwd` and the mod pane's `PaneInfo.cwd` are `null`. Resolve the workspace folder from sibling terminal panes in the active tab/space before falling back to `space.folder`.
-- Unstaging files on a repository with no commits yet (`HEAD` unborn) cannot use `git reset HEAD`; fall back to `git rm --cached -r -- <path>`.
-- Guard `init()` async side effects with `if (checking()) return;` after initializing `InputState` / `TextareaState` / `ScrollHandle` handles so `herdr-app check` renders cleanly without spawning processes.
+- Prepend `--no-optional-locks -c core.fsmonitor=false -c diff.autoRefreshIndex=false` to read-only `git` calls so `watchFolder` never loops.
+- Resolve workspace `cwd` from sibling terminal panes in the active tab when the mod pane itself holds focus.
+- Handle unborn `HEAD` repositories with `git rm --cached -r` when unstaging.
+- Never allow `buildSliceGroups` to omit unclaimed `git status` files.
 
 ## Done when
 
-- `npm run validate` passes all unit, CLI/worktree, and key-contract tests plus `herdr-app check mods/git-status`.
-- `herdr-app check ~/.config/herdr-app/mods/git-status` passes and `herdr-app status` reports `"errors": []`.
-- Pressing `Alt+Shift+G` splits and closes the `git-status` pane cleanly in the active tab.
-- Appending a note via `bin/herdr-git-note.mjs add` or the **+ Note** modal updates `<git-dir>/herdr-agent-notes.json`, leaves `git status` clean, and auto-refreshes the pane.
+- `npm run validate` and `herdr-app check ~/.config/herdr-app/mods/git-status` pass with zero errors in `herdr-app status`.
+- Multi-file slices, unattributed edits, inline line comments, `Submit Review`, and `Commit` work end-to-end without dirtying `git status`.
