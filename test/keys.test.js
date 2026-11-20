@@ -25,7 +25,7 @@ test("mod.json, keys.json, and package.json follow Herdr Git Review and Pi packa
     path.join(repoDir, "extensions", "herdr-git-notes", "index.ts"),
     "utf8",
   );
-  assert.ok(extSource.includes('name: "record_change_slices"'));
+  assert.ok(extSource.includes('name: "record_change_topics"'));
   assert.ok(extSource.includes('name: "review_threads"'));
   assert.ok(extSource.includes('registerCommand("git-review"'));
 });

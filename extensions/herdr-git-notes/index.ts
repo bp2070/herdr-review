@@ -64,13 +64,13 @@ function resolveTrackedGitTarget(rawPath: string, baseCwd: string): { repoRoot: 
   }
 }
 
-const SliceFileSchema = Type.Object({
+const TopicFileSchema = Type.Object({
   filePath: Type.String({
-    description: "Repository-relative or absolute path to a file belonging to this logical slice",
+    description: "Repository-relative or absolute path to a file belonging to this logical topic",
   }),
   summary: Type.Optional(
     Type.String({
-      description: "Optional 1-line note specific to this file's role within the slice",
+      description: "Optional 1-line note specific to this file's role within the topic",
     }),
   ),
   lineRange: Type.Optional(
@@ -85,18 +85,18 @@ const SliceFileSchema = Type.Object({
   ),
 });
 
-const SliceEntrySchema = Type.Object({
+const TopicEntrySchema = Type.Object({
   id: Type.Optional(
     Type.String({
-      description: "Optional stable slice ID when updating an existing slice",
+      description: "Optional stable topic ID when updating an existing topic",
     }),
   ),
   title: Type.String({
-    description: "Concise 1-line headline describing this logical group of changes",
+    description: "Concise 1-line headline describing this logical topic of changes",
   }),
   rationale: Type.Optional(
     Type.String({
-      description: "Optional 1-2 sentence explanation of why this slice was made or key trade-offs",
+      description: "Optional 1-2 sentence explanation of why this topic was made or key trade-offs",
     }),
   ),
   order: Type.Optional(
@@ -104,8 +104,8 @@ const SliceEntrySchema = Type.Object({
       description: "Optional reading order (1, 2, 3...)",
     }),
   ),
-  files: Type.Array(SliceFileSchema, {
-    description: "Files affected by this logical change slice",
+  files: Type.Array(TopicFileSchema, {
+    description: "Files affected by this logical change topic",
   }),
 });
 
@@ -115,12 +115,12 @@ const SuggestedCommitSchema = Type.Object({
   }),
   body: Type.Optional(
     Type.String({
-      description: "Optional multi-line commit body (e.g. bullet points for key slices)",
+      description: "Optional multi-line commit body (e.g. bullet points for key topics)",
     }),
   ),
 });
 
-export const RecordChangeSlicesParams = Type.Object({
+export const RecordChangeTopicsParams = Type.Object({
   action: Type.Optional(
     StringEnum(["upsert", "list", "remove", "clear"] as const, {
       description: "Operation to perform (defaults to 'upsert')",
@@ -132,25 +132,25 @@ export const RecordChangeSlicesParams = Type.Object({
         "High-level 1-3 sentence overall summary of the changeset displayed at the top of Herdr Git Review",
     }),
   ),
-  slices: Type.Optional(
-    Type.Array(SliceEntrySchema, {
-      description: "Logical change slices grouping related file modifications for code review",
+  topics: Type.Optional(
+    Type.Array(TopicEntrySchema, {
+      description: "Logical change topics grouping related file modifications for code review",
     }),
   ),
   suggestedCommit: Type.Optional(SuggestedCommitSchema),
   replaceAll: Type.Optional(
     Type.Boolean({
-      description: "When true on 'upsert', replaces all previous slices with this fresh set",
+      description: "When true on 'upsert', replaces all previous topics with this fresh set",
     }),
   ),
   id: Type.Optional(
     Type.String({
-      description: "Slice ID when action is 'remove'",
+      description: "Topic ID when action is 'remove'",
     }),
   ),
   pruneClean: Type.Optional(
     Type.Boolean({
-      description: "When action is 'clear', remove only slices/resolved-threads for clean committed files",
+      description: "When action is 'clear', remove only topics/resolved-threads for clean committed files",
     }),
   ),
   agentName: Type.Optional(
@@ -160,7 +160,7 @@ export const RecordChangeSlicesParams = Type.Object({
   ),
 });
 
-export type RecordChangeSlicesInput = Static<typeof RecordChangeSlicesParams>;
+export type RecordChangeTopicsInput = Static<typeof RecordChangeTopicsParams>;
 
 const ThreadReplyEntrySchema = Type.Object({
   threadId: Type.String({
@@ -216,23 +216,23 @@ export default function herdrGitReviewExtension(pi: ExtensionAPI) {
   let updatedSuggestedCommitThisRun = false;
   let remindedThisRun = false;
 
-  const markSliceFilesRecorded = (repoRoot: string, paths: string[]) => {
+  const markTopicFilesRecorded = (repoRoot: string, paths: string[]) => {
     for (const fp of paths) {
       unattributedEdits.delete(`${repoRoot.toLowerCase()}\0${fp}`);
     }
   };
 
   pi.registerTool({
-    name: "record_change_slices",
-    label: "Record Change Slices",
+    name: "record_change_topics",
+    label: "Record Change Topics",
     description:
-      "Record a high-level overall summary, logical multi-file Change Slices, and a suggested commit message in <git-dir>/herdr-review.json for Herdr's Git Review workspace pane.",
+      "Record a high-level overall summary, logical multi-file Change Topics, and a suggested commit message in <git-dir>/herdr-review.json for Herdr's Git Review workspace pane.",
     promptSnippet:
-      "Record an overall summary, logical review Slices, and a suggested commit message for Herdr Git Review",
+      "Record an overall summary, logical review Topics, and a suggested commit message for Herdr Git Review",
     promptGuidelines: [
-      "After modifying or creating repository files with `edit` or `write`, call `record_change_slices` with a concise high-level `overview`, logical `slices` grouping related file changes by intent, and an up-to-date `suggestedCommit` (`{ subject, body? }`).",
+      "After modifying or creating repository files with `edit` or `write`, call `record_change_topics` with a concise high-level `overview`, logical `topics` grouping related file changes by intent, and an up-to-date `suggestedCommit` (`{ subject, body? }`).",
     ],
-    parameters: RecordChangeSlicesParams,
+    parameters: RecordChangeTopicsParams,
     executionMode: "sequential",
     annotations: {
       readOnlyHint: false,
@@ -258,17 +258,17 @@ export default function herdrGitReviewExtension(pi: ExtensionAPI) {
         if (res.doc.suggestedCommit?.subject) {
           lines.push(`Suggested Commit: ${res.doc.suggestedCommit.subject}`);
         }
-        if (res.doc.slices.length === 0) {
-          lines.push("No change slices recorded.");
+        if (res.doc.topics.length === 0) {
+          lines.push("No change topics recorded.");
         } else {
-          for (const s of res.doc.slices) {
-            const filesList = s.files.map((f: any) => f.filePath).join(", ");
-            lines.push(`[${s.id}] ${s.title} (${filesList})`);
+          for (const t of res.doc.topics) {
+            const filesList = t.files.map((f: any) => f.filePath).join(", ");
+            lines.push(`[${t.id}] ${t.title} (${filesList})`);
           }
         }
         return {
           content: [{ type: "text", text: lines.join("\n") }],
-          details: { action: "list", totalSlices: res.doc.slices.length },
+          details: { action: "list", totalTopics: res.doc.topics.length },
         };
       }
 
@@ -276,8 +276,8 @@ export default function herdrGitReviewExtension(pi: ExtensionAPI) {
         if (!params.id) throw new Error("`id` is required when action is 'remove'.");
         const res = runCliJson(["remove", "--cwd", cwd, "--id", params.id, "--json"]);
         return {
-          content: [{ type: "text", text: `Removed ${res.removed} slice(s) (${res.doc.slices.length} remaining).` }],
-          details: { action: "remove", totalSlices: res.doc.slices.length },
+          content: [{ type: "text", text: `Removed ${res.removed} topic(s) (${res.doc.topics.length} remaining).` }],
+          details: { action: "remove", totalTopics: res.doc.topics.length },
         };
       }
 
@@ -288,36 +288,35 @@ export default function herdrGitReviewExtension(pi: ExtensionAPI) {
           content: [
             {
               type: "text",
-              text: `Cleaned review state (${res.doc.slices.length} slice(s), ${res.doc.threads.length} thread(s) remaining).`,
+              text: `Cleaned review state (${res.doc.topics.length} topic(s), ${res.doc.threads.length} thread(s) remaining).`,
             },
           ],
-          details: { action: "clear", totalSlices: res.doc.slices.length },
+          details: { action: "clear", totalTopics: res.doc.topics.length },
         };
       }
 
-      const slices = Array.isArray(params.slices) ? params.slices : [];
-      if (slices.length === 0 && !params.suggestedCommit && !params.overview) {
-        throw new Error("Provide `slices`, `overview`, and/or `suggestedCommit` when action is 'upsert'.");
+      const topics = Array.isArray(params.topics) ? params.topics : [];
+      if (topics.length === 0 && !params.suggestedCommit && !params.overview) {
+        throw new Error("Provide `topics`, `overview`, and/or `suggestedCommit` when action is 'upsert'.");
       }
 
-      // Resolve absolute file paths against ctx.cwd first so subdirectory paths are never double-prefixed
       let effectiveCwd = cwd;
-      const resolvedSlices = slices.map((s) => ({
-        ...s,
-        files: s.files.map((f) => {
+      const resolvedTopics = topics.map((t) => ({
+        ...t,
+        files: t.files.map((f) => {
           const absFile = path.isAbsolute(f.filePath) ? f.filePath : path.resolve(cwd, f.filePath);
           return { ...f, filePath: absFile };
         }),
       }));
 
-      const firstAbsFile = resolvedSlices[0]?.files?.[0]?.filePath;
+      const firstAbsFile = resolvedTopics[0]?.files?.[0]?.filePath;
       if (firstAbsFile) {
         effectiveCwd = path.dirname(firstAbsFile);
       }
 
       const saved = runCliJson(["upsert-json"], {
         cwd: effectiveCwd,
-        slices: resolvedSlices,
+        topics: resolvedTopics,
         overview: params.overview,
         suggestedCommit: params.suggestedCommit,
         replaceAll: Boolean(params.replaceAll),
@@ -325,8 +324,8 @@ export default function herdrGitReviewExtension(pi: ExtensionAPI) {
         autoHunk: true,
       });
 
-      const recordedPaths = saved.upserted.flatMap((s: any) => s.files.map((f: any) => f.filePath));
-      markSliceFilesRecorded(saved.repoRoot, recordedPaths);
+      const recordedPaths = saved.upserted.flatMap((t: any) => t.files.map((f: any) => f.filePath));
+      markTopicFilesRecorded(saved.repoRoot, recordedPaths);
       if (params.overview) updatedOverviewThisRun = true;
       if (params.suggestedCommit?.subject) updatedSuggestedCommitThisRun = true;
 
@@ -337,13 +336,13 @@ export default function herdrGitReviewExtension(pi: ExtensionAPI) {
         content: [
           {
             type: "text",
-            text: `Recorded ${saved.upserted.length} slice(s) across ${recordedPaths.length} file entry/entries (${saved.doc.slices.length} total slices)${commitMsg}.`,
+            text: `Recorded ${saved.upserted.length} topic(s) across ${recordedPaths.length} file entry/entries (${saved.doc.topics.length} total topics)${commitMsg}.`,
           },
         ],
         details: {
           action: "upsert",
-          upsertedSlices: saved.upserted.length,
-          totalSlices: saved.doc.slices.length,
+          upsertedTopics: saved.upserted.length,
+          totalTopics: saved.doc.topics.length,
         },
       };
     },
@@ -351,16 +350,16 @@ export default function herdrGitReviewExtension(pi: ExtensionAPI) {
     renderCall(args, theme) {
       const action = args.action ?? "upsert";
       if (action === "upsert") {
-        const count = Array.isArray(args.slices) ? args.slices.length : 0;
+        const count = Array.isArray(args.topics) ? args.topics.length : 0;
         const commitInfo = args.suggestedCommit?.subject ? ` "${args.suggestedCommit.subject}"` : "";
         return new Text(
-          `${theme.fg("toolTitle", theme.bold("record_change_slices "))}${theme.fg("accent", `${count} slice(s)`)}${theme.fg("muted", commitInfo)}`,
+          `${theme.fg("toolTitle", theme.bold("record_change_topics "))}${theme.fg("accent", `${count} topic(s)`)}${theme.fg("muted", commitInfo)}`,
           0,
           0,
         );
       }
       return new Text(
-        `${theme.fg("toolTitle", theme.bold("record_change_slices "))}${theme.fg("muted", action)}`,
+        `${theme.fg("toolTitle", theme.bold("record_change_topics "))}${theme.fg("muted", action)}`,
         0,
         0,
       );
@@ -491,7 +490,7 @@ export default function herdrGitReviewExtension(pi: ExtensionAPI) {
           ? ` There ${openCount === 1 ? "is 1 open review thread" : `are ${openCount} open review threads`} in this repository—use \`review_threads\` to inspect or reply as you address them.`
           : "";
       event.systemPromptOptions.sections.herdr_git_review =
-        `Keep Herdr Git Review updated via \`record_change_slices\` (or \`tools.record_change_slices\` in \`codemode\`): provide a concise high-level \`overview\`, group related edits into logical \`slices\`, and set \`suggestedCommit\`.${openHint}`;
+        `Keep Herdr Git Review updated via \`record_change_topics\` (or \`tools.record_change_topics\` in \`codemode\`): provide a concise high-level \`overview\`, group related edits into logical \`topics\`, and set \`suggestedCommit\`.${openHint}`;
     } catch {
       delete event.systemPromptOptions.sections.herdr_git_review;
     }
@@ -527,7 +526,7 @@ export default function herdrGitReviewExtension(pi: ExtensionAPI) {
         {
           type: "custom_message",
           customType: "herdr-git-review-reminder",
-          content: `You modified repository file(s) not yet grouped in Herdr Git Review: ${files.join(", ")}. Call \`record_change_slices\` to group them by logical intent${extraText}, then conclude briefly.`,
+          content: `You modified repository file(s) not yet grouped in Herdr Git Review: ${files.join(", ")}. Call \`record_change_topics\` to group them by logical intent${extraText}, then conclude briefly.`,
           display: false,
         },
       ],
@@ -535,46 +534,40 @@ export default function herdrGitReviewExtension(pi: ExtensionAPI) {
     };
   });
 
-  const handleReviewCommand = async (args: string, ctx: any) => {
-    const sub = (args || "list").trim().toLowerCase();
-    try {
-      if (sub === "prune") {
-        const res = runCliJson(["clear", "--cwd", ctx.cwd, "--prune-clean", "--json"]);
-        ctx.ui.notify(
-          `Pruned clean review items (${res.doc.slices.length} slices, ${res.doc.threads.length} threads remaining).`,
-          "info",
-        );
-        return;
-      }
-      if (sub === "clear") {
-        runCliJson(["clear", "--cwd", ctx.cwd, "--json"]);
-        ctx.ui.notify("Cleared all slices, threads, overview, and suggested commit.", "info");
-        return;
-      }
-      const { doc } = runCliJson(["list", "--cwd", ctx.cwd, "--json"]);
-      const lines: string[] = [];
-      if (doc.overview?.text) {
-        lines.push(`Overview: ${doc.overview.text}`);
-      }
-      if (doc.suggestedCommit?.subject) {
-        lines.push(`Commit: ${doc.suggestedCommit.subject}`);
-      }
-      lines.push(`Slices: ${doc.slices.length} | Threads: ${doc.threads.filter((t: any) => t.status !== "resolved").length} active`);
-      for (const s of doc.slices.slice(0, 5)) {
-        lines.push(`• ${s.title} (${s.files.length}f)`);
-      }
-      ctx.ui.notify(lines.join("\n"), "info");
-    } catch (err: any) {
-      ctx.ui.notify(`Git review error: ${err?.message ?? err}`, "error");
-    }
-  };
-
   pi.registerCommand("git-review", {
-    description: "Inspect, prune, or clear Herdr Git Review slices and threads in the current repository",
-    handler: handleReviewCommand,
-  });
-  pi.registerCommand("git-notes", {
-    description: "Alias for /git-review",
-    handler: handleReviewCommand,
+    description: "Inspect, prune, or clear Herdr Git Review topics and threads in the current repository",
+    handler: async (args: string, ctx: any) => {
+      const sub = (args || "list").trim().toLowerCase();
+      try {
+        if (sub === "prune") {
+          const res = runCliJson(["clear", "--cwd", ctx.cwd, "--prune-clean", "--json"]);
+          ctx.ui.notify(
+            `Pruned clean review items (${res.doc.topics.length} topics, ${res.doc.threads.length} threads remaining).`,
+            "info",
+          );
+          return;
+        }
+        if (sub === "clear") {
+          runCliJson(["clear", "--cwd", ctx.cwd, "--json"]);
+          ctx.ui.notify("Cleared all topics, threads, overview, and suggested commit.", "info");
+          return;
+        }
+        const { doc } = runCliJson(["list", "--cwd", ctx.cwd, "--json"]);
+        const lines: string[] = [];
+        if (doc.overview?.text) {
+          lines.push(`Overview: ${doc.overview.text}`);
+        }
+        if (doc.suggestedCommit?.subject) {
+          lines.push(`Commit: ${doc.suggestedCommit.subject}`);
+        }
+        lines.push(`Topics: ${doc.topics.length} | Threads: ${doc.threads.filter((t: any) => t.status !== "resolved").length} active`);
+        for (const t of doc.topics.slice(0, 5)) {
+          lines.push(`• ${t.title} (${t.files.length}f)`);
+        }
+        ctx.ui.notify(lines.join("\n"), "info");
+      } catch (err: any) {
+        ctx.ui.notify(`Git review error: ${err?.message ?? err}`, "error");
+      }
+    },
   });
 }

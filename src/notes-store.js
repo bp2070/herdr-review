@@ -5,7 +5,6 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import {
   GIT_READ_ARGS,
-  LEGACY_NOTES_FILENAME,
   REVIEW_FILENAME,
   addCommentToDocument,
   buildUntrackedDiffLines,
@@ -15,11 +14,11 @@ import {
   parsePorcelainStatusZ,
   parseReviewDocument,
   pruneCleanStateInDocument,
-  removeSliceFromDocument,
+  removeTopicFromDocument,
   serializeReviewDocument,
   setThreadStatusInDocument,
   sliceUnifiedHunks,
-  upsertSlicesInDocument,
+  upsertTopicsInDocument,
 } from "../mods/git-status/model.js";
 
 function safeRealpath(targetPath) {
@@ -67,8 +66,7 @@ export function resolveGitPaths(cwd = process.cwd()) {
 
   const gitDir = safeRealpath(path.resolve(repoRoot, gitDirRaw));
   const reviewFile = path.join(gitDir, REVIEW_FILENAME);
-  const legacyNotesFile = path.join(gitDir, LEGACY_NOTES_FILENAME);
-  return { repoRoot, gitDir, reviewFile, notesFile: reviewFile, legacyNotesFile };
+  return { repoRoot, gitDir, reviewFile };
 }
 
 export function captureAutoDiffHunk(repoRoot, repoRelativePath) {
@@ -114,16 +112,6 @@ async function readTextIfExists(filePath) {
   }
 }
 
-async function readReviewRaw(reviewFile, legacyNotesFile) {
-  const current = await readTextIfExists(reviewFile);
-  if (current.trim()) return current;
-  const legacy = await readTextIfExists(legacyNotesFile);
-  if (legacy.trim()) {
-    return serializeReviewDocument(parseReviewDocument("", legacy));
-  }
-  return "";
-}
-
 async function writeAtomic(filePath, content) {
   const dir = path.dirname(filePath);
   await fs.mkdir(dir, { recursive: true });
@@ -143,30 +131,26 @@ async function writeAtomic(filePath, content) {
 }
 
 export async function readReviewState({ cwd = process.cwd() } = {}) {
-  const { repoRoot, gitDir, reviewFile, legacyNotesFile } = resolveGitPaths(cwd);
-  const raw = await readReviewRaw(reviewFile, legacyNotesFile);
+  const { repoRoot, gitDir, reviewFile } = resolveGitPaths(cwd);
+  const raw = await readTextIfExists(reviewFile);
   const doc = parseReviewDocument(raw);
   return { repoRoot, gitDir, reviewFile, doc };
 }
 
-export async function upsertReviewSlices({
+export async function upsertReviewTopics({
   cwd = process.cwd(),
-  slices = [],
+  topics = [],
   overview = undefined,
   suggestedCommit = undefined,
   replaceAll = false,
   agentName = "pi",
   autoHunk = true,
 } = {}) {
-  const { repoRoot, reviewFile, legacyNotesFile } = resolveGitPaths(cwd);
-  const current = await readReviewRaw(reviewFile, legacyNotesFile);
+  const { repoRoot, reviewFile } = resolveGitPaths(cwd);
+  const current = await readTextIfExists(reviewFile);
 
-  const normalizedIncoming = slices.map((s) => {
-    const rawFiles = Array.isArray(s.files)
-      ? s.files
-      : s.filePath
-        ? [{ filePath: s.filePath, summary: s.fileSummary, lineRange: s.lineRange, diffHunk: s.diffHunk }]
-        : [];
+  const normalizedIncoming = topics.map((t) => {
+    const rawFiles = Array.isArray(t.files) ? t.files : [];
     const files = rawFiles
       .map((f) => {
         const entry = typeof f === "string" ? { filePath: f } : { ...f };
@@ -185,8 +169,8 @@ export async function upsertReviewSlices({
       .filter(Boolean);
 
     return {
-      ...s,
-      agentName: s.agentName || agentName,
+      ...t,
+      agentName: t.agentName || agentName,
       files,
     };
   });
@@ -203,13 +187,13 @@ export async function upsertReviewSlices({
       ? { ...suggestedCommit, agentName: suggestedCommit.agentName || agentName }
       : suggestedCommit;
 
-  const result = upsertSlicesInDocument(current, {
-    slices: normalizedIncoming,
+  const result = upsertTopicsInDocument(current, {
+    topics: normalizedIncoming,
     overview: overviewInput,
     suggestedCommit: commitInput,
     replaceAll,
     nowIso: new Date().toISOString(),
-    createId: () => `s-${randomUUID().slice(0, 8)}`,
+    createId: () => `tpc-${randomUUID().slice(0, 8)}`,
   });
 
   await writeAtomic(reviewFile, result.text);
@@ -221,11 +205,11 @@ export async function upsertReviewSlices({
   };
 }
 
-export async function removeReviewSlice({ cwd = process.cwd(), id } = {}) {
-  if (!id) throw new Error("Slice id is required.");
-  const { repoRoot, reviewFile, legacyNotesFile } = resolveGitPaths(cwd);
-  const current = await readReviewRaw(reviewFile, legacyNotesFile);
-  const result = removeSliceFromDocument(current, id);
+export async function removeReviewTopic({ cwd = process.cwd(), id } = {}) {
+  if (!id) throw new Error("Topic id is required.");
+  const { repoRoot, reviewFile } = resolveGitPaths(cwd);
+  const current = await readTextIfExists(reviewFile);
+  const result = removeTopicFromDocument(current, id);
   if (result.removed > 0) await writeAtomic(reviewFile, result.text);
   return { repoRoot, reviewFile, removed: result.removed, doc: result.doc };
 }
@@ -233,7 +217,7 @@ export async function removeReviewSlice({ cwd = process.cwd(), id } = {}) {
 export async function addReviewComment({
   cwd = process.cwd(),
   threadId = "",
-  sliceId = "",
+  topicId = "",
   filePath = "",
   lineNumber = null,
   lineRange = "",
@@ -243,15 +227,15 @@ export async function addReviewComment({
   body = "",
   status = undefined,
 } = {}) {
-  const { repoRoot, reviewFile, legacyNotesFile } = resolveGitPaths(cwd);
-  const current = await readReviewRaw(reviewFile, legacyNotesFile);
+  const { repoRoot, reviewFile } = resolveGitPaths(cwd);
+  const current = await readTextIfExists(reviewFile);
   const normFile = filePath ? resolveRepoRelativePath(filePath, cwd, repoRoot) : "";
 
   const result = addCommentToDocument(
     current,
     {
       threadId,
-      sliceId,
+      topicId,
       filePath: normFile,
       lineNumber,
       lineRange,
@@ -272,31 +256,30 @@ export async function addReviewComment({
 }
 
 export async function updateReviewThreadStatus({ cwd = process.cwd(), threadId, status } = {}) {
-  const { repoRoot, reviewFile, legacyNotesFile } = resolveGitPaths(cwd);
-  const current = await readReviewRaw(reviewFile, legacyNotesFile);
+  const { repoRoot, reviewFile } = resolveGitPaths(cwd);
+  const current = await readTextIfExists(reviewFile);
   const result = setThreadStatusInDocument(current, threadId, status, new Date().toISOString());
   if (result.updated) await writeAtomic(reviewFile, result.text);
   return { repoRoot, reviewFile, updated: result.updated, doc: result.doc };
 }
 
 export async function deleteReviewThread({ cwd = process.cwd(), threadId } = {}) {
-  const { repoRoot, reviewFile, legacyNotesFile } = resolveGitPaths(cwd);
-  const current = await readReviewRaw(reviewFile, legacyNotesFile);
+  const { repoRoot, reviewFile } = resolveGitPaths(cwd);
+  const current = await readTextIfExists(reviewFile);
   const result = deleteThreadFromDocument(current, threadId);
   if (result.removed > 0) await writeAtomic(reviewFile, result.text);
   return { repoRoot, reviewFile, removed: result.removed, doc: result.doc };
 }
 
 export async function pruneOrClearReviewState({ cwd = process.cwd(), pruneClean = false } = {}) {
-  const { repoRoot, reviewFile, legacyNotesFile } = resolveGitPaths(cwd);
+  const { repoRoot, reviewFile } = resolveGitPaths(cwd);
   if (!pruneClean) {
     const emptyText = serializeReviewDocument(emptyReviewDocument());
     await writeAtomic(reviewFile, emptyText);
-    await fs.unlink(legacyNotesFile).catch(() => {});
     return { repoRoot, reviewFile, doc: emptyReviewDocument() };
   }
 
-  const current = await readReviewRaw(reviewFile, legacyNotesFile);
+  const current = await readTextIfExists(reviewFile);
   const statusOut = execFileSync(
     "git",
     [...GIT_READ_ARGS, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
@@ -309,87 +292,8 @@ export async function pruneOrClearReviewState({ cwd = process.cwd(), pruneClean 
   return {
     repoRoot,
     reviewFile,
-    removedSlices: result.removedSlices,
+    removedTopics: result.removedTopics,
     removedThreads: result.removedThreads,
     doc: result.doc,
-  };
-}
-
-// Backward-compatible v1 helper exports
-export async function addAgentNote({
-  cwd = process.cwd(),
-  filePath,
-  summary,
-  agentName,
-  diffHunk,
-  lineRange,
-  autoHunk = false,
-  id,
-} = {}) {
-  const res = await upsertReviewSlices({
-    cwd,
-    agentName,
-    autoHunk,
-    slices: [
-      {
-        id,
-        title: summary,
-        agentName,
-        files: [{ filePath, lineRange, diffHunk }],
-      },
-    ],
-  });
-  const s = res.upserted[0];
-  const f = s?.files?.[0] ?? {};
-  return {
-    repoRoot: res.repoRoot,
-    notesFile: res.reviewFile,
-    note: {
-      id: s.id,
-      filePath: f.filePath,
-      summary: s.title,
-      agentName: s.agentName,
-      timestamp: s.timestamp,
-      diffHunk: f.diffHunk,
-      lineRange: f.lineRange,
-    },
-    total: res.doc.slices.length,
-  };
-}
-
-export async function listAgentNotes({ cwd = process.cwd(), filePath = "" } = {}) {
-  const { repoRoot, reviewFile, doc } = await readReviewState({ cwd });
-  const target = filePath ? resolveRepoRelativePath(filePath, cwd, repoRoot) : "";
-  const notes = [];
-  for (const s of doc.slices) {
-    for (const f of s.files) {
-      if (target && f.filePath !== target) continue;
-      notes.push({
-        id: s.id,
-        filePath: f.filePath,
-        summary: f.summary || s.title,
-        sliceTitle: s.title,
-        agentName: s.agentName,
-        timestamp: s.timestamp,
-        diffHunk: f.diffHunk,
-        lineRange: f.lineRange,
-      });
-    }
-  }
-  return { repoRoot, notesFile: reviewFile, notes, doc };
-}
-
-export async function removeAgentNote({ cwd = process.cwd(), id } = {}) {
-  const res = await removeReviewSlice({ cwd, id });
-  return { repoRoot: res.repoRoot, notesFile: res.reviewFile, removed: res.removed, remaining: res.doc.slices.length };
-}
-
-export async function clearAgentNotes({ cwd = process.cwd(), pruneClean = false } = {}) {
-  const res = await pruneOrClearReviewState({ cwd, pruneClean });
-  return {
-    repoRoot: res.repoRoot,
-    notesFile: res.reviewFile,
-    removed: res.removedSlices ?? 0,
-    remaining: res.doc.slices.length,
   };
 }

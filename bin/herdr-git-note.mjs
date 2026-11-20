@@ -1,22 +1,20 @@
 #!/usr/bin/env node
 import fs from "node:fs";
 import {
-  addAgentNote,
   addReviewComment,
   pruneOrClearReviewState,
   readReviewState,
-  removeReviewSlice,
+  removeReviewTopic,
   updateReviewThreadStatus,
-  upsertReviewSlices,
+  upsertReviewTopics,
 } from "../src/notes-store.js";
 
 function usage() {
   return `Usage:
-  herdr-git-note slice --title <text> --files <p1,p2> [--overview <text>] [--rationale <text>] [--commit <subject>] [--body <text>] [--agent <name>] [--cwd <dir>] [--json]
-  herdr-git-note add --file <path> --summary <text> [--agent <name>] [--lines <L1-L9>] [--hunk <diff|->] [--auto-hunk] [--cwd <dir>] [--json]
+  herdr-git-note topic --title <text> --files <p1,p2> [--overview <text>] [--rationale <text>] [--commit <subject>] [--body <text>] [--agent <name>] [--cwd <dir>] [--json]
   herdr-git-note reply --thread <id> --body <text> [--status addressed|open|resolved] [--agent <name>] [--cwd <dir>] [--json]
   herdr-git-note list [--cwd <dir>] [--json]
-  herdr-git-note remove --id <slice-id> [--cwd <dir>] [--json]
+  herdr-git-note remove --id <topic-id> [--cwd <dir>] [--json]
   herdr-git-note clear [--prune-clean] [--cwd <dir>] [--json]
 `;
 }
@@ -30,7 +28,7 @@ function parseArgs(argv) {
       continue;
     }
     const key = token.slice(2);
-    if (key === "json" || key === "auto-hunk" || key === "prune-clean" || key === "replace-all" || key === "help") {
+    if (key === "json" || key === "prune-clean" || key === "replace-all" || key === "help") {
       args[key] = true;
     } else {
       args[key] = argv[++i] ?? "";
@@ -57,7 +55,7 @@ async function main() {
   }
   const cwd = args.cwd || process.cwd();
 
-  if (sub === "slice") {
+  if (sub === "topic") {
     const files = String(args.files || args.file || "")
       .split(",")
       .map((s) => s.trim())
@@ -66,40 +64,44 @@ async function main() {
       ? { subject: args.commit, ...(args.body ? { body: args.body } : {}) }
       : undefined;
     const overview = args.overview || undefined;
-    const slices =
-      args.title || args.summary
-        ? [
-            {
-              id: args.id,
-              title: args.title || args.summary,
-              rationale: args.rationale || "",
-              files,
-            },
-          ]
-        : [];
-    const res = await upsertReviewSlices({
+    const topics = args.title
+      ? [
+          {
+            id: args.id,
+            title: args.title,
+            rationale: args.rationale || "",
+            files,
+          },
+        ]
+      : [];
+    const res = await upsertReviewTopics({
       cwd,
       agentName: args.agent || detectDefaultAgent(),
       replaceAll: Boolean(args["replace-all"]),
       overview,
       suggestedCommit,
-      slices,
+      topics,
     });
     if (args.json) {
       process.stdout.write(`${JSON.stringify(res, null, 2)}\n`);
     } else if (res.upserted.length > 0) {
-      process.stdout.write(`Upserted slice "${res.upserted[0]?.title}" (${res.doc.slices.length} slices total)\n`);
+      process.stdout.write(`Upserted topic "${res.upserted[0]?.title}" (${res.doc.topics.length} topics total)\n`);
     } else {
-      process.stdout.write(`Updated review overview/commit (${res.doc.slices.length} slices total)\n`);
+      process.stdout.write(`Updated review overview/commit (${res.doc.topics.length} topics total)\n`);
     }
     return;
   }
 
   if (sub === "upsert-json") {
     const payload = JSON.parse(fs.readFileSync(0, "utf8"));
-    const res = await upsertReviewSlices({
+    const incoming = Array.isArray(payload.topics)
+      ? payload.topics
+      : Array.isArray(payload.slices)
+        ? payload.slices
+        : [];
+    const res = await upsertReviewTopics({
       cwd: payload.cwd || cwd,
-      slices: Array.isArray(payload.slices) ? payload.slices : [],
+      topics: incoming,
       overview: payload.overview,
       suggestedCommit: payload.suggestedCommit,
       replaceAll: Boolean(payload.replaceAll),
@@ -130,23 +132,6 @@ async function main() {
     return;
   }
 
-  if (sub === "add") {
-    let diffHunk = args.hunk ?? "";
-    if (diffHunk === "-") diffHunk = fs.readFileSync(0, "utf8");
-    const res = await addAgentNote({
-      cwd,
-      filePath: args.file || args.path,
-      summary: args.summary || args.desc,
-      agentName: args.agent || detectDefaultAgent(),
-      lineRange: args.lines || args["line-range"] || "",
-      diffHunk,
-      autoHunk: Boolean(args["auto-hunk"]),
-    });
-    if (args.json) process.stdout.write(`${JSON.stringify(res, null, 2)}\n`);
-    else process.stdout.write(`Recorded slice ${res.note.id} on ${res.note.filePath} (${res.total} total)\n`);
-    return;
-  }
-
   if (sub === "reply") {
     if (args.status && !args.body) {
       const res = await updateReviewThreadStatus({ cwd, threadId: args.thread || args.id, status: args.status });
@@ -173,19 +158,19 @@ async function main() {
       process.stdout.write(`${JSON.stringify(res, null, 2)}\n`);
       return;
     }
-    const { slices, threads, overview, suggestedCommit } = res.doc;
+    const { topics, threads, overview, suggestedCommit } = res.doc;
     if (overview?.text) {
       process.stdout.write(`Overview: ${overview.text}\n`);
     }
     if (suggestedCommit?.subject) {
       process.stdout.write(`Suggested Commit: ${suggestedCommit.subject}\n`);
     }
-    if (slices.length === 0) {
-      process.stdout.write("No change slices recorded.\n");
+    if (topics.length === 0) {
+      process.stdout.write("No change topics recorded.\n");
     } else {
-      for (const s of slices) {
-        const paths = s.files.map((f) => f.filePath).join(", ");
-        process.stdout.write(`[${s.id}] ${s.title} (${paths})\n`);
+      for (const t of topics) {
+        const paths = t.files.map((f) => f.filePath).join(", ");
+        process.stdout.write(`[${t.id}] ${t.title} (${paths})\n`);
       }
     }
     if (threads.length > 0) {
@@ -199,16 +184,16 @@ async function main() {
   }
 
   if (sub === "remove") {
-    const res = await removeReviewSlice({ cwd, id: args.id });
+    const res = await removeReviewTopic({ cwd, id: args.id });
     if (args.json) process.stdout.write(`${JSON.stringify(res, null, 2)}\n`);
-    else process.stdout.write(`Removed ${res.removed} slice(s)\n`);
+    else process.stdout.write(`Removed ${res.removed} topic(s)\n`);
     return;
   }
 
   if (sub === "clear") {
     const res = await pruneOrClearReviewState({ cwd, pruneClean: Boolean(args["prune-clean"]) });
     if (args.json) process.stdout.write(`${JSON.stringify(res, null, 2)}\n`);
-    else process.stdout.write(`Cleaned review state (${res.doc.slices.length} slices, ${res.doc.threads.length} threads remaining)\n`);
+    else process.stdout.write(`Cleaned review state (${res.doc.topics.length} topics, ${res.doc.threads.length} threads remaining)\n`);
     return;
   }
 

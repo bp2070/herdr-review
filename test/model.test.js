@@ -1,15 +1,15 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import {
-  UNATTRIBUTED_SLICE_ID,
+  UNATTRIBUTED_TOPIC_ID,
   addCommentToDocument,
   buildFullFileDiffLines,
   buildGitCommitCommands,
-  buildSliceGroups,
+  buildTopicGroups,
   countActiveReviewThreads,
   deriveCommitSuggestion,
   deriveOverviewInfo,
-  extractNoteDiffInfo,
+  extractDiffHunkInfo,
   filterFilesForReview,
   formatRelativeTime,
   formatReviewDispatchPrompt,
@@ -18,7 +18,6 @@ import {
   parseDiffLines,
   parseNumstatZ,
   parsePorcelainStatusZ,
-  parseReviewDocument,
   planPaneToggle,
   promoteDraftThreadsToOpen,
   pruneCleanStateInDocument,
@@ -27,7 +26,7 @@ import {
   stageAllCommandArgs,
   stageCommandArgs,
   stagePathsCommandArgs,
-  upsertSlicesInDocument,
+  upsertTopicsInDocument,
   withAlpha,
 } from "../mods/git-status/model.js";
 
@@ -95,7 +94,7 @@ test("planPaneToggle splits right when absent and closes pane when present", () 
   });
 });
 
-test("parsePorcelainStatusZ, mergeStatusAndStats, and slice staging commands handle all statuses", () => {
+test("parsePorcelainStatusZ, mergeStatusAndStats, and topic staging commands handle all statuses", () => {
   const raw = [
     " M src/outbox/poller.ts",
     "M  src/db/schema/permissions.ts",
@@ -131,34 +130,12 @@ test("parsePorcelainStatusZ, mergeStatusAndStats, and slice staging commands han
   assert.deepEqual(stageAllCommandArgs(files, true), ["add", "-A"]);
 });
 
-test("v1 notes migrate seamlessly into v2 ChangeSlices", () => {
-  const legacyJson = JSON.stringify({
-    version: 1,
-    notes: [
-      {
-        id: "n-1",
-        filePath: "src/auth/session.ts",
-        summary: "Added sliding session expiry guard",
-        agentName: "pi",
-        timestamp: "2026-11-20T15:00:00.000Z",
-        lineRange: "L18-L24",
-      },
-    ],
-  });
-  const doc = parseReviewDocument("", legacyJson);
-  assert.equal(doc.version, 2);
-  assert.equal(doc.slices.length, 1);
-  assert.equal(doc.slices[0].title, "Added sliding session expiry guard");
-  assert.equal(doc.slices[0].files[0].filePath, "src/auth/session.ts");
-  assert.equal(doc.slices[0].files[0].lineRange, "L18-L24");
-});
-
-test("buildSliceGroups groups multi-file slices and guarantees Unattributed bucket for manual edits", () => {
-  const upserted = upsertSlicesInDocument("", {
+test("buildTopicGroups groups multi-file topics, derives Overview, and guarantees Unattributed bucket", () => {
+  const upserted = upsertTopicsInDocument("", {
     overview: "Threads tenantId across auth session validation and API route handlers.",
-    slices: [
+    topics: [
       {
-        id: "s-auth",
+        id: "tpc-auth",
         title: "Thread tenantId into session validation and routes",
         rationale: "Required so downstream outbox queries isolate per tenant.",
         agentName: "pi",
@@ -212,27 +189,27 @@ test("buildSliceGroups groups multi-file slices and guarantees Unattributed buck
     },
   ];
 
-  const groups = buildSliceGroups(gitFiles, upserted.doc.slices, upserted.doc.threads);
+  const groups = buildTopicGroups(gitFiles, upserted.doc.topics, upserted.doc.threads);
   assert.equal(groups.length, 2);
 
   const authGroup = groups[0];
-  assert.equal(authGroup.id, "s-auth");
+  assert.equal(authGroup.id, "tpc-auth");
   assert.equal(authGroup.items.length, 2);
   assert.equal(authGroup.additions, 24);
   assert.equal(authGroup.deletions, 4);
   assert.equal(authGroup.partiallyStaged, true);
 
   const unattrib = groups[1];
-  assert.equal(unattrib.id, UNATTRIBUTED_SLICE_ID);
+  assert.equal(unattrib.id, UNATTRIBUTED_TOPIC_ID);
   assert.equal(unattrib.isUnattributed, true);
   assert.equal(unattrib.items.length, 1);
   assert.equal(unattrib.items[0].filePath, "README.md");
 
-  assert.equal(filterFilesForReview(gitFiles, upserted.doc.slices, [], { query: "tenantId" }).length, 2);
+  assert.equal(filterFilesForReview(gitFiles, upserted.doc.topics, [], { query: "tenantId" }).length, 2);
 
   const overviewInfo = deriveOverviewInfo({
     files: gitFiles,
-    slices: upserted.doc.slices,
+    topics: upserted.doc.topics,
     overview: upserted.doc.overview,
   });
   assert.equal(overviewInfo.synthesized, false);
@@ -241,7 +218,7 @@ test("buildSliceGroups groups multi-file slices and guarantees Unattributed buck
 
   const synthOverview = deriveOverviewInfo({
     files: gitFiles,
-    slices: upserted.doc.slices,
+    topics: upserted.doc.topics,
     overview: null,
   });
   assert.equal(synthOverview.synthesized, true);
@@ -249,11 +226,10 @@ test("buildSliceGroups groups multi-file slices and guarantees Unattributed buck
 });
 
 test("ReviewThread back-and-forth lifecycle, dispatch prompt, and post-commit pruning", () => {
-  // 1. Reviewer adds a draft comment on line 24
   const step1 = addCommentToDocument(
     "",
     {
-      sliceId: "s-auth",
+      topicId: "tpc-auth",
       filePath: "src/auth/session.ts",
       lineNumber: 24,
       lineRange: "L24",
@@ -266,19 +242,17 @@ test("ReviewThread back-and-forth lifecycle, dispatch prompt, and post-commit pr
   );
   assert.equal(step1.thread.status, "draft");
 
-  // 2. Submit Review promotes draft -> open and builds dispatch prompt
   const step2 = promoteDraftThreadsToOpen(step1.text, "2026-11-20T16:11:00.000Z");
   assert.equal(step2.promotedCount, 1);
   assert.equal(step2.openThreads[0].status, "open");
 
   const prompt = formatReviewDispatchPrompt(step2.doc.threads, [
-    { id: "s-auth", title: "Thread tenantId into session" },
+    { id: "tpc-auth", title: "Thread tenantId into session" },
   ]);
   assert.match(prompt, /Thread `t-100`/);
-  assert.match(prompt, /src\/auth\/session\.ts/);
-  assert.match(prompt, /Make tenantId required/);
+  assert.match(prompt, /Topic: "Thread tenantId into session"/);
+  assert.match(prompt, /record_change_topics/);
 
-  // 3. Agent replies and marks thread addressed
   const step3 = addCommentToDocument(
     step2.text,
     {
@@ -295,37 +269,34 @@ test("ReviewThread back-and-forth lifecycle, dispatch prompt, and post-commit pr
   assert.equal(countActiveReviewThreads(step3.doc.threads).unresolvedTotal, 0);
   assert.equal(countActiveReviewThreads(step3.doc.threads).addressed, 1);
 
-  // 4. Reviewer resolves thread, then commits -> prune removes resolved thread
   const step4 = setThreadStatusInDocument(step3.text, "t-100", "resolved", "2026-11-20T16:13:00.000Z");
   const pruned = pruneCleanStateInDocument(step4.text, new Set());
   assert.equal(pruned.doc.threads.length, 0);
 });
 
-test("deriveCommitSuggestion scopes to staged slice when partial staging is active and builds git commit args", () => {
-  const slices = [
-    { id: "s1", title: "feat(auth): thread tenantId", rationale: "Isolate tenants.", files: [{ filePath: "a.ts" }] },
-    { id: "s2", title: "fix(outbox): add retry jitter", rationale: "Avoid herd.", files: [{ filePath: "b.ts" }] },
+test("deriveCommitSuggestion scopes to staged topic when partial staging is active and builds git commit args", () => {
+  const topics = [
+    { id: "t1", title: "feat(auth): thread tenantId", rationale: "Isolate tenants.", files: [{ filePath: "a.ts" }] },
+    { id: "t2", title: "fix(outbox): add retry jitter", rationale: "Avoid herd.", files: [{ filePath: "b.ts" }] },
   ];
   const suggestedCommit = { subject: "feat: tenant isolation and outbox retry jitter", body: "- auth\n- outbox" };
 
-  // When nothing is staged, uses overall suggestedCommit
   const full = deriveCommitSuggestion({
     files: [
       { path: "a.ts", hasStaged: false },
       { path: "b.ts", hasStaged: false },
     ],
-    slices,
+    topics,
     suggestedCommit,
   });
   assert.equal(full.subject, "feat: tenant isolation and outbox retry jitter");
 
-  // When only a.ts (Slice 1) is staged, scopes suggestion to Slice 1!
   const scoped = deriveCommitSuggestion({
     files: [
       { path: "a.ts", hasStaged: true },
       { path: "b.ts", hasStaged: false },
     ],
-    slices,
+    topics,
     suggestedCommit,
   });
   assert.equal(scoped.subject, "feat(auth): thread tenantId");
@@ -339,8 +310,8 @@ test("deriveCommitSuggestion scopes to staged slice when partial staging is acti
   ]);
 });
 
-test("extractNoteDiffInfo, buildFullFileDiffLines, parseDiffLines, formatRelativeTime, withAlpha", () => {
-  const info = extractNoteDiffInfo({ diffHunk: "@@ -24,1 +24,2 @@\n-old\n+new1\n+new2" });
+test("extractDiffHunkInfo, buildFullFileDiffLines, parseDiffLines, formatRelativeTime, withAlpha", () => {
+  const info = extractDiffHunkInfo({ diffHunk: "@@ -24,1 +24,2 @@\n-old\n+new1\n+new2" });
   assert.equal(info.lineRange, "L24-L25");
   assert.equal(info.hasDiff, true);
 

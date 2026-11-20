@@ -1,13 +1,11 @@
-// Pure data, Git status/diff parsing, ChangeSlice & ReviewThread store, commit message derivation,
+// Pure data, Git status/diff parsing, ChangeTopic & ReviewThread store, overview/commit derivation,
 // review dispatch formatting, and Catppuccin Mocha palette helpers.
 // Keep free of Herdr, GPUI, and Node-specific imports.
 
 export const MOD_NAME = "git-status";
 export const REVIEW_FILENAME = "herdr-review.json";
-export const LEGACY_NOTES_FILENAME = "herdr-agent-notes.json";
-export const NOTES_FILENAME = REVIEW_FILENAME;
 export const SHARED_BUMP_KEY = "git-status.bump";
-export const UNATTRIBUTED_SLICE_ID = "__unattributed__";
+export const UNATTRIBUTED_TOPIC_ID = "__unattributed__";
 
 // Prevent read-only git calls from touching .git/index or fsmonitor cookies (avoids watch loops).
 export const GIT_READ_ARGS = [
@@ -503,7 +501,7 @@ export function buildFullFileDiffLines({
   return trimmed;
 }
 
-export function extractNoteDiffInfo(item) {
+export function extractDiffHunkInfo(item) {
   const rawHunk = typeof item?.diffHunk === "string" ? item.diffHunk.replace(/\r\n/g, "\n").trim() : "";
   const explicitRange = typeof item?.lineRange === "string" ? item.lineRange.trim() : "";
 
@@ -536,20 +534,20 @@ export function extractNoteDiffInfo(item) {
 }
 
 // ============================================================================
-// V2 REVIEW DOCUMENT: SLICES, THREADS, SUGGESTED COMMIT (& V1 MIGRATION)
+// REVIEW DOCUMENT: OVERVIEW, CHANGE TOPICS, REVIEW THREADS, SUGGESTED COMMIT
 // ============================================================================
 
-export function normalizeSliceFile(raw) {
+export function normalizeTopicFile(raw) {
   if (typeof raw === "string") {
     const fp = normalizeRepoPath(raw);
     return fp ? { filePath: fp } : null;
   }
   if (!raw || typeof raw !== "object") return null;
-  const filePath = normalizeRepoPath(raw.filePath ?? raw.path ?? "");
+  const filePath = normalizeRepoPath(raw.filePath ?? "");
   if (!filePath) return null;
-  const summary = String(raw.summary ?? raw.description ?? "").replace(/\s+/g, " ").trim();
-  const lineRange = String(raw.lineRange ?? raw.lines ?? "").trim();
-  const diffHunk = typeof (raw.diffHunk ?? raw.diff) === "string" ? (raw.diffHunk ?? raw.diff).replace(/\r\n/g, "\n").trimEnd() : "";
+  const summary = String(raw.summary ?? "").replace(/\s+/g, " ").trim();
+  const lineRange = String(raw.lineRange ?? "").trim();
+  const diffHunk = typeof raw.diffHunk === "string" ? raw.diffHunk.replace(/\r\n/g, "\n").trimEnd() : "";
 
   const entry = { filePath };
   if (summary) entry.summary = summary;
@@ -558,19 +556,15 @@ export function normalizeSliceFile(raw) {
   return entry;
 }
 
-export function normalizeSlice(raw, fallbackId = "slice-1", indexOrder = 0) {
+export function normalizeTopic(raw, fallbackId = "tpc-1", indexOrder = 0) {
   if (!raw || typeof raw !== "object") return null;
-  const title = String(raw.title ?? raw.summary ?? "").replace(/\s+/g, " ").trim();
-  const rawFiles = Array.isArray(raw.files)
-    ? raw.files
-    : raw.filePath
-      ? [{ filePath: raw.filePath, lineRange: raw.lineRange, diffHunk: raw.diffHunk }]
-      : [];
+  const title = String(raw.title ?? "").replace(/\s+/g, " ").trim();
+  const rawFiles = Array.isArray(raw.files) ? raw.files : [];
 
   const seenPaths = new Set();
   const files = [];
   for (const item of rawFiles) {
-    const normalized = normalizeSliceFile(item);
+    const normalized = normalizeTopicFile(item);
     if (!normalized || seenPaths.has(normalized.filePath)) continue;
     seenPaths.add(normalized.filePath);
     files.push(normalized);
@@ -579,27 +573,27 @@ export function normalizeSlice(raw, fallbackId = "slice-1", indexOrder = 0) {
   if (!title || files.length === 0) return null;
 
   const id = String(raw.id ?? "").trim() || fallbackId;
-  const rationale = String(raw.rationale ?? raw.why ?? "").trim();
-  const agentName = String(raw.agentName ?? raw.agent ?? "").trim();
+  const rationale = String(raw.rationale ?? "").trim();
+  const agentName = String(raw.agentName ?? "").trim();
   const parsedTime = raw.timestamp ? Date.parse(String(raw.timestamp)) : NaN;
   const timestamp = Number.isFinite(parsedTime) ? new Date(parsedTime).toISOString() : new Date(0).toISOString();
   const order = Number.isFinite(Number(raw.order)) ? Number(raw.order) : indexOrder;
 
-  const slice = {
+  const topic = {
     id,
     title,
     timestamp,
     order,
     files,
   };
-  if (rationale) slice.rationale = rationale;
-  if (agentName) slice.agentName = agentName;
-  return slice;
+  if (rationale) topic.rationale = rationale;
+  if (agentName) topic.agentName = agentName;
+  return topic;
 }
 
 export function normalizeReviewMessage(raw, fallbackId = "m-1") {
   if (!raw || typeof raw !== "object") return null;
-  const body = String(raw.body ?? raw.text ?? "").trim();
+  const body = String(raw.body ?? "").trim();
   if (!body) return null;
   const role = raw.role === "agent" ? "agent" : "user";
   const author = String(raw.author ?? (role === "agent" ? "pi" : "you")).trim() || (role === "agent" ? "pi" : "you");
@@ -621,20 +615,12 @@ export function normalizeThread(raw, fallbackId = "t-1") {
   const messages = (Array.isArray(raw.messages) ? raw.messages : [])
     .map((m, idx) => normalizeReviewMessage(m, `${fallbackId}-m${idx + 1}`))
     .filter(Boolean);
-
-  if (messages.length === 0 && typeof raw.body === "string" && raw.body.trim()) {
-    const single = normalizeReviewMessage(
-      { body: raw.body, author: raw.author, role: raw.role, timestamp: raw.createdAt },
-      `${fallbackId}-m1`,
-    );
-    if (single) messages.push(single);
-  }
   if (messages.length === 0) return null;
 
   const id = String(raw.id ?? "").trim() || fallbackId;
   const status = VALID_THREAD_STATUSES.has(raw.status) ? raw.status : "draft";
   const filePath = raw.filePath ? normalizeRepoPath(raw.filePath) : "";
-  const sliceId = String(raw.sliceId ?? "").trim();
+  const topicId = String(raw.topicId ?? "").trim();
   const lineNumber = Number.isFinite(Number(raw.lineNumber)) && Number(raw.lineNumber) > 0 ? Number(raw.lineNumber) : null;
   const lineRange = String(raw.lineRange ?? (lineNumber ? `L${lineNumber}` : "")).trim();
   const codeExcerpt = typeof raw.codeExcerpt === "string" ? raw.codeExcerpt.replace(/\r\n/g, "\n").trimEnd() : "";
@@ -653,7 +639,7 @@ export function normalizeThread(raw, fallbackId = "t-1") {
     updatedAt,
     messages,
   };
-  if (sliceId) thread.sliceId = sliceId;
+  if (topicId) thread.topicId = topicId;
   if (filePath) thread.filePath = filePath;
   if (lineNumber !== null) thread.lineNumber = lineNumber;
   if (lineRange) thread.lineRange = lineRange;
@@ -672,9 +658,9 @@ export function normalizeOverview(raw) {
     };
   }
   if (typeof raw !== "object") return null;
-  const text = String(raw.text ?? raw.summary ?? "").replace(/\r\n/g, "\n").trim();
+  const text = String(raw.text ?? "").replace(/\r\n/g, "\n").trim();
   if (!text) return null;
-  const agentName = String(raw.agentName ?? raw.agent ?? "").trim();
+  const agentName = String(raw.agentName ?? "").trim();
   const parsedTime = raw.updatedAt ? Date.parse(String(raw.updatedAt)) : NaN;
   const updatedAt = Number.isFinite(parsedTime) ? new Date(parsedTime).toISOString() : new Date(0).toISOString();
   return {
@@ -698,7 +684,7 @@ export function normalizeSuggestedCommit(raw) {
     };
   }
   if (typeof raw !== "object") return null;
-  const subject = String(raw.subject ?? raw.message ?? "").replace(/\s+/g, " ").trim();
+  const subject = String(raw.subject ?? "").replace(/\s+/g, " ").trim();
   if (!subject) return null;
   const body = typeof raw.body === "string" ? raw.body.replace(/\r\n/g, "\n").trim() : "";
   const agentName = String(raw.agentName ?? "").trim();
@@ -717,66 +703,27 @@ export function emptyReviewDocument() {
     version: 2,
     overview: null,
     suggestedCommit: null,
-    slices: [],
+    topics: [],
     threads: [],
   };
 }
 
-/**
- * Parses a v2 `herdr-review.json` document (or migrates v1 `notes` seamlessly).
- */
-export function parseReviewDocument(jsonText, legacyNotesText = "") {
-  const source = jsonText && String(jsonText).trim() ? String(jsonText) : String(legacyNotesText ?? "");
-  if (!source.trim()) return emptyReviewDocument();
+export function parseReviewDocument(jsonText) {
+  const source = String(jsonText ?? "").trim();
+  if (!source) return emptyReviewDocument();
 
   try {
     const parsed = JSON.parse(source);
-
-    // Migrate v1 `{ notes: [...] }` or bare note array into 1-file Slices
-    if (Array.isArray(parsed) || (Array.isArray(parsed?.notes) && !Array.isArray(parsed?.slices))) {
-      const rawNotes = Array.isArray(parsed) ? parsed : parsed.notes;
-      const slices = [];
-      for (let i = 0; i < rawNotes.length; i++) {
-        const n = rawNotes[i];
-        const s = normalizeSlice(
-          {
-            id: n?.id || `s-${i + 1}`,
-            title: n?.summary ?? n?.title,
-            agentName: n?.agentName ?? n?.agent,
-            timestamp: n?.timestamp,
-            order: i + 1,
-            files: [
-              {
-                filePath: n?.filePath ?? n?.path,
-                lineRange: n?.lineRange ?? n?.lines,
-                diffHunk: n?.diffHunk ?? n?.diff,
-              },
-            ],
-          },
-          `s-${i + 1}`,
-          i + 1,
-        );
-        if (s) slices.push(s);
-      }
-      return {
-        version: 2,
-        overview: null,
-        suggestedCommit: null,
-        slices,
-        threads: [],
-      };
+    const topics = [];
+    const seenTopics = new Set();
+    const rawTopics = Array.isArray(parsed?.topics) ? parsed.topics : [];
+    for (let i = 0; i < rawTopics.length; i++) {
+      const t = normalizeTopic(rawTopics[i], `tpc-${i + 1}`, i + 1);
+      if (!t || seenTopics.has(t.id)) continue;
+      seenTopics.add(t.id);
+      topics.push(t);
     }
-
-    const slices = [];
-    const seenSlices = new Set();
-    const rawSlices = Array.isArray(parsed?.slices) ? parsed.slices : [];
-    for (let i = 0; i < rawSlices.length; i++) {
-      const s = normalizeSlice(rawSlices[i], `s-${i + 1}`, i + 1);
-      if (!s || seenSlices.has(s.id)) continue;
-      seenSlices.add(s.id);
-      slices.push(s);
-    }
-    slices.sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || Date.parse(a.timestamp) - Date.parse(b.timestamp));
+    topics.sort((a, b) => (a.order ?? 0) - (b.order ?? 0) || Date.parse(a.timestamp) - Date.parse(b.timestamp));
 
     const threads = [];
     const seenThreads = new Set();
@@ -788,13 +735,11 @@ export function parseReviewDocument(jsonText, legacyNotesText = "") {
       threads.push(th);
     }
 
-    const overview = normalizeOverview(parsed?.overview);
-    const suggestedCommit = normalizeSuggestedCommit(parsed?.suggestedCommit);
     return {
       version: 2,
-      overview,
-      suggestedCommit,
-      slices,
+      overview: normalizeOverview(parsed?.overview),
+      suggestedCommit: normalizeSuggestedCommit(parsed?.suggestedCommit),
+      topics,
       threads,
     };
   } catch {
@@ -807,30 +752,30 @@ export function serializeReviewDocument(doc) {
   return `${JSON.stringify(normalized, null, 2)}\n`;
 }
 
-export function upsertSlicesInDocument(
+export function upsertTopicsInDocument(
   docText,
   {
-    slices: incomingSlices = [],
+    topics: incomingTopics = [],
     overview = undefined,
     suggestedCommit = undefined,
     replaceAll = false,
     nowIso = new Date().toISOString(),
-    createId = () => `s-${Date.now()}`,
+    createId = () => `tpc-${Date.now()}`,
   } = {},
 ) {
   const doc = parseReviewDocument(docText);
-  const baseList = replaceAll ? [] : [...doc.slices];
+  const baseList = replaceAll ? [] : [...doc.topics];
   const upserted = [];
 
-  for (let i = 0; i < incomingSlices.length; i++) {
-    const raw = incomingSlices[i];
+  for (let i = 0; i < incomingTopics.length; i++) {
+    const raw = incomingTopics[i];
     const matchIdx = baseList.findIndex(
       (existing) =>
         (raw?.id && existing.id === raw.id) ||
         (!raw?.id && raw?.title && existing.title.toLowerCase() === String(raw.title).trim().toLowerCase()),
     );
     const prev = matchIdx >= 0 ? baseList[matchIdx] : null;
-    const normalized = normalizeSlice(
+    const normalized = normalizeTopic(
       {
         ...prev,
         ...raw,
@@ -873,7 +818,7 @@ export function upsertSlicesInDocument(
     version: 2,
     overview: nextOverview,
     suggestedCommit: nextCommit,
-    slices: baseList,
+    topics: baseList,
     threads: doc.threads,
   };
   return {
@@ -883,12 +828,12 @@ export function upsertSlicesInDocument(
   };
 }
 
-export function removeSliceFromDocument(docText, sliceId) {
+export function removeTopicFromDocument(docText, topicId) {
   const doc = parseReviewDocument(docText);
-  const nextSlices = doc.slices.filter((s) => s.id !== sliceId);
-  const nextDoc = { ...doc, slices: nextSlices };
+  const nextTopics = doc.topics.filter((t) => t.id !== topicId);
+  const nextDoc = { ...doc, topics: nextTopics };
   return {
-    removed: doc.slices.length - nextSlices.length,
+    removed: doc.topics.length - nextTopics.length,
     doc: nextDoc,
     text: serializeReviewDocument(nextDoc),
   };
@@ -898,7 +843,7 @@ export function addCommentToDocument(
   docText,
   {
     threadId = "",
-    sliceId = "",
+    topicId = "",
     filePath = "",
     lineNumber = null,
     lineRange = "",
@@ -955,7 +900,7 @@ export function addCommentToDocument(
     targetThread = normalizeThread(
       {
         id: threadId || createId(),
-        sliceId,
+        topicId,
         filePath,
         lineNumber,
         lineRange,
@@ -1028,14 +973,14 @@ export function pruneCleanStateInDocument(docText, dirtyPathsSet, { dropResolved
   const doc = parseReviewDocument(docText);
   const keep = dirtyPathsSet instanceof Set ? dirtyPathsSet : new Set(dirtyPathsSet ?? []);
 
-  const slices = [];
-  let removedSlices = 0;
-  for (const s of doc.slices) {
-    const remainingFiles = s.files.filter((f) => keep.has(f.filePath));
+  const topics = [];
+  let removedTopics = 0;
+  for (const t of doc.topics) {
+    const remainingFiles = t.files.filter((f) => keep.has(f.filePath));
     if (remainingFiles.length > 0) {
-      slices.push({ ...s, files: remainingFiles });
+      topics.push({ ...t, files: remainingFiles });
     } else {
-      removedSlices += 1;
+      removedTopics += 1;
     }
   }
 
@@ -1049,11 +994,11 @@ export function pruneCleanStateInDocument(docText, dirtyPathsSet, { dropResolved
     version: 2,
     overview: keep.size === 0 ? null : doc.overview,
     suggestedCommit: keep.size === 0 ? null : doc.suggestedCommit,
-    slices,
+    topics,
     threads,
   };
   return {
-    removedSlices,
+    removedTopics,
     removedThreads: doc.threads.length - threads.length,
     doc: nextDoc,
     text: serializeReviewDocument(nextDoc),
@@ -1061,7 +1006,7 @@ export function pruneCleanStateInDocument(docText, dirtyPathsSet, { dropResolved
 }
 
 // ============================================================================
-// VIEW BUILDERS: BY-SLICE GROUPS (WITH UNATTRIBUTED TRUST BUCKET) & BY-FILE
+// VIEW BUILDERS: BY-TOPIC GROUPS (WITH UNATTRIBUTED TRUST BUCKET) & BY-FILE
 // ============================================================================
 
 export function countActiveReviewThreads(threads = []) {
@@ -1091,42 +1036,42 @@ function threadMatchesQuery(thread, q) {
 }
 
 /**
- * Builds logical Slice review cards over live `gitFiles`, guaranteeing 100% visibility of all
- * uncommitted changes by placing any unclaimed files into an `Unattributed Changes` bucket.
+ * Builds logical Topic review cards over live `gitFiles`, guaranteeing 100% visibility of all
+ * uncommitted changes by placing any unclaimed files into an `Unattributed / Manual Changes` bucket.
  */
-export function buildSliceGroups(gitFiles = [], slices = [], threads = [], { filter = "ALL", query = "" } = {}) {
+export function buildTopicGroups(gitFiles = [], topics = [], threads = [], { filter = "ALL", query = "" } = {}) {
   const fileMap = new Map(gitFiles.map((f) => [f.path, f]));
   const claimedPaths = new Set();
   const rawGroups = [];
 
-  for (const slice of slices) {
+  for (const topic of topics) {
     const items = [];
-    for (const sf of slice.files) {
-      const liveFile = fileMap.get(sf.filePath);
+    for (const tf of topic.files) {
+      const liveFile = fileMap.get(tf.filePath);
       if (!liveFile) continue;
-      claimedPaths.add(sf.filePath);
+      claimedPaths.add(tf.filePath);
       const itemThreads = threads.filter(
-        (t) => t.filePath === sf.filePath && (!t.sliceId || t.sliceId === slice.id),
+        (t) => t.filePath === tf.filePath && (!t.topicId || t.topicId === topic.id),
       );
       items.push({
-        filePath: sf.filePath,
+        filePath: tf.filePath,
         gitFile: liveFile,
-        summary: sf.summary || "",
-        lineRange: sf.lineRange || "",
-        diffHunk: sf.diffHunk || "",
+        summary: tf.summary || "",
+        lineRange: tf.lineRange || "",
+        diffHunk: tf.diffHunk || "",
         threads: itemThreads,
       });
     }
 
-    const sliceLevelThreads = threads.filter((t) => t.sliceId === slice.id && !t.filePath);
-    if (items.length === 0 && sliceLevelThreads.filter((t) => t.status !== "resolved").length === 0) {
+    const topicLevelThreads = threads.filter((t) => t.topicId === topic.id && !t.filePath);
+    if (items.length === 0 && topicLevelThreads.filter((t) => t.status !== "resolved").length === 0) {
       continue;
     }
 
-    rawGroups.push(createSliceGroupRecord(slice, items, sliceLevelThreads, false));
+    rawGroups.push(createTopicGroupRecord(topic, items, topicLevelThreads, false));
   }
 
-  // Trust invariant: collect every dirty file in `git status` not claimed by any active Slice
+  // Trust invariant: collect every dirty file in `git status` not claimed by any active Topic
   const unattributedFiles = gitFiles.filter((f) => !claimedPaths.has(f.path));
   if (unattributedFiles.length > 0) {
     const items = unattributedFiles.map((liveFile) => ({
@@ -1138,15 +1083,15 @@ export function buildSliceGroups(gitFiles = [], slices = [], threads = [], { fil
       threads: threads.filter((t) => t.filePath === liveFile.path),
     }));
     rawGroups.push(
-      createSliceGroupRecord(
+      createTopicGroupRecord(
         {
-          id: UNATTRIBUTED_SLICE_ID,
+          id: UNATTRIBUTED_TOPIC_ID,
           title: "Unattributed / Manual Changes",
-          rationale: "Modified files in git status not yet grouped into an agent change slice.",
+          rationale: "Modified files in git status not yet grouped into a change topic.",
           timestamp: new Date(0).toISOString(),
         },
         items,
-        threads.filter((t) => t.sliceId === UNATTRIBUTED_SLICE_ID && !t.filePath),
+        threads.filter((t) => t.topicId === UNATTRIBUTED_TOPIC_ID && !t.filePath),
         true,
       ),
     );
@@ -1164,7 +1109,7 @@ export function buildSliceGroups(gitFiles = [], slices = [], threads = [], { fil
     if (group.title.toLowerCase().includes(q)) return true;
     if (group.rationale && group.rationale.toLowerCase().includes(q)) return true;
     if (group.agentName && group.agentName.toLowerCase().includes(q)) return true;
-    if (group.sliceThreads.some((t) => threadMatchesQuery(t, q))) return true;
+    if (group.topicThreads.some((t) => threadMatchesQuery(t, q))) return true;
     return group.items.some(
       (item) =>
         item.filePath.toLowerCase().includes(q) ||
@@ -1174,7 +1119,7 @@ export function buildSliceGroups(gitFiles = [], slices = [], threads = [], { fil
   });
 }
 
-function createSliceGroupRecord(slice, items, sliceThreads, isUnattributed) {
+function createTopicGroupRecord(topic, items, topicThreads, isUnattributed) {
   const gitFiles = items.map((i) => i.gitFile).filter(Boolean);
   const additions = gitFiles.reduce((acc, f) => acc + (f.additions || 0), 0);
   const deletions = gitFiles.reduce((acc, f) => acc + (f.deletions || 0), 0);
@@ -1185,7 +1130,7 @@ function createSliceGroupRecord(slice, items, sliceThreads, isUnattributed) {
 
   const seenThreadIds = new Set();
   const allThreads = [];
-  for (const t of [...sliceThreads, ...items.flatMap((i) => i.threads)]) {
+  for (const t of [...topicThreads, ...items.flatMap((i) => i.threads)]) {
     if (!seenThreadIds.has(t.id)) {
       seenThreadIds.add(t.id);
       allThreads.push(t);
@@ -1194,15 +1139,15 @@ function createSliceGroupRecord(slice, items, sliceThreads, isUnattributed) {
   const activeThreadCount = allThreads.filter((t) => t.status !== "resolved").length;
 
   return {
-    id: slice.id,
-    title: slice.title,
-    rationale: slice.rationale || "",
-    agentName: slice.agentName || "",
-    timestamp: slice.timestamp,
+    id: topic.id,
+    title: topic.title,
+    rationale: topic.rationale || "",
+    agentName: topic.agentName || "",
+    timestamp: topic.timestamp,
     isUnattributed,
     items,
     gitFiles,
-    sliceThreads,
+    topicThreads,
     allThreads,
     activeThreadCount,
     additions,
@@ -1214,7 +1159,7 @@ function createSliceGroupRecord(slice, items, sliceThreads, isUnattributed) {
   };
 }
 
-export function filterFilesForReview(gitFiles = [], slices = [], threads = [], { filter = "ALL", query = "" } = {}) {
+export function filterFilesForReview(gitFiles = [], topics = [], threads = [], { filter = "ALL", query = "" } = {}) {
   const normFilter = String(filter || "ALL").toUpperCase();
   const q = String(query ?? "").trim().toLowerCase();
 
@@ -1228,25 +1173,25 @@ export function filterFilesForReview(gitFiles = [], slices = [], threads = [], {
     if (!q) return true;
     if (file.path.toLowerCase().includes(q)) return true;
     if (fileThreads.some((t) => threadMatchesQuery(t, q))) return true;
-    const matchingSlices = slices.filter((s) => s.files.some((sf) => sf.filePath === file.path));
-    return matchingSlices.some(
-      (s) =>
-        s.title.toLowerCase().includes(q) ||
-        (s.rationale && s.rationale.toLowerCase().includes(q)) ||
-        s.files.some((sf) => sf.filePath === file.path && sf.summary && sf.summary.toLowerCase().includes(q)),
+    const matchingTopics = topics.filter((tp) => tp.files.some((tf) => tf.filePath === file.path));
+    return matchingTopics.some(
+      (tp) =>
+        tp.title.toLowerCase().includes(q) ||
+        (tp.rationale && tp.rationale.toLowerCase().includes(q)) ||
+        tp.files.some((tf) => tf.filePath === file.path && tf.summary && tf.summary.toLowerCase().includes(q)),
     );
   });
 }
 
 // ============================================================================
-// REVIEW DISPATCH PROMPT & COMMIT SUGGESTION HELPERS
+// REVIEW DISPATCH PROMPT, OVERVIEW, & COMMIT SUGGESTION HELPERS
 // ============================================================================
 
-export function formatReviewDispatchPrompt(threads = [], slices = []) {
+export function formatReviewDispatchPrompt(threads = [], topics = []) {
   const active = threads.filter((t) => t.status === "open" || t.status === "draft");
   if (active.length === 0) return "";
 
-  const sliceTitleById = new Map(slices.map((s) => [s.id, s.title]));
+  const topicTitleById = new Map(topics.map((t) => [t.id, t.title]));
   const lines = [
     `Code review feedback (${active.length} comment${active.length === 1 ? "" : "s"}) from Herdr Git Review:`,
     "",
@@ -1257,8 +1202,8 @@ export function formatReviewDispatchPrompt(threads = [], slices = []) {
     const targetParts = [];
     if (t.filePath) targetParts.push(`\`${t.filePath}\``);
     if (t.lineRange) targetParts.push(`(${t.lineRange})`);
-    if (t.sliceId && sliceTitleById.has(t.sliceId)) {
-      targetParts.push(`— Slice: "${sliceTitleById.get(t.sliceId)}"`);
+    if (t.topicId && topicTitleById.has(t.topicId)) {
+      targetParts.push(`— Topic: "${topicTitleById.get(t.topicId)}"`);
     }
     const headerTarget = targetParts.length ? targetParts.join(" ") : "General";
     lines.push(`${i + 1}. [Thread \`${t.id}\`] ${headerTarget}`);
@@ -1272,12 +1217,12 @@ export function formatReviewDispatchPrompt(threads = [], slices = []) {
   }
 
   lines.push(
-    "Please address each review thread above, reply to each `threadId` using `review_threads` (`action: \"reply\"`, `status: \"addressed\"`), and keep `record_change_slices` + `suggestedCommit` updated.",
+    "Please address each review thread above, reply to each `threadId` using `review_threads` (`action: \"reply\"`, `status: \"addressed\"`), and keep `record_change_topics` + `suggestedCommit` updated.",
   );
   return lines.join("\n");
 }
 
-export function deriveOverviewInfo({ files = [], slices = [], overview = null } = {}) {
+export function deriveOverviewInfo({ files = [], topics = [], overview = null } = {}) {
   const additions = files.reduce((acc, f) => acc + (f.additions || 0), 0);
   const deletions = files.reduce((acc, f) => acc + (f.deletions || 0), 0);
 
@@ -1295,23 +1240,23 @@ export function deriveOverviewInfo({ files = [], slices = [], overview = null } 
   if (!files.length) return null;
 
   const dirtyPaths = new Set(files.map((f) => f.path));
-  const activeSlices = slices.filter((s) => s.files.some((sf) => dirtyPaths.has(sf.filePath)));
-  if (activeSlices.length === 1) {
-    const s = activeSlices[0];
+  const activeTopics = topics.filter((t) => t.files.some((tf) => dirtyPaths.has(tf.filePath)));
+  if (activeTopics.length === 1) {
+    const t = activeTopics[0];
     return {
-      text: s.rationale ? `${s.title} — ${s.rationale}` : s.title,
-      agentName: s.agentName || "",
-      updatedAt: s.timestamp || "",
+      text: t.rationale ? `${t.title} — ${t.rationale}` : t.title,
+      agentName: t.agentName || "",
+      updatedAt: t.timestamp || "",
       synthesized: true,
       additions,
       deletions,
     };
   }
-  if (activeSlices.length > 1) {
+  if (activeTopics.length > 1) {
     return {
-      text: activeSlices.map((s, i) => `${i + 1}. ${s.title}`).join(" · "),
-      agentName: activeSlices[0].agentName || "",
-      updatedAt: activeSlices[0].timestamp || "",
+      text: activeTopics.map((t, i) => `${i + 1}. ${t.title}`).join(" · "),
+      agentName: activeTopics[0].agentName || "",
+      updatedAt: activeTopics[0].timestamp || "",
       synthesized: true,
       additions,
       deletions,
@@ -1328,25 +1273,25 @@ export function deriveOverviewInfo({ files = [], slices = [], overview = null } 
   };
 }
 
-export function deriveCommitSuggestion({ files = [], slices = [], suggestedCommit = null } = {}) {
+export function deriveCommitSuggestion({ files = [], topics = [], suggestedCommit = null } = {}) {
   if (!files.length) return { subject: "", body: "" };
 
   const stagedFiles = files.filter((f) => f.hasStaged);
   const targetPaths = new Set((stagedFiles.length > 0 ? stagedFiles : files).map((f) => f.path));
 
-  // If user staged a specific subset that cleanly matches a subset of slices, scope the suggestion to those slices
-  if (stagedFiles.length > 0 && stagedFiles.length < files.length && slices.length > 1) {
-    const matchingSlices = slices.filter((s) => s.files.some((sf) => targetPaths.has(sf.filePath)));
-    if (matchingSlices.length === 1) {
+  // If user staged a specific subset that cleanly matches a subset of topics, scope the suggestion to those topics
+  if (stagedFiles.length > 0 && stagedFiles.length < files.length && topics.length > 1) {
+    const matchingTopics = topics.filter((t) => t.files.some((tf) => targetPaths.has(tf.filePath)));
+    if (matchingTopics.length === 1) {
       return {
-        subject: matchingSlices[0].title,
-        body: matchingSlices[0].rationale || "",
+        subject: matchingTopics[0].title,
+        body: matchingTopics[0].rationale || "",
       };
     }
-    if (matchingSlices.length > 1 && matchingSlices.length < slices.length) {
+    if (matchingTopics.length > 1 && matchingTopics.length < topics.length) {
       return {
-        subject: matchingSlices[0].title,
-        body: matchingSlices.map((s) => `- ${s.title}`).join("\n"),
+        subject: matchingTopics[0].title,
+        body: matchingTopics.map((t) => `- ${t.title}`).join("\n"),
       };
     }
   }
@@ -1358,17 +1303,17 @@ export function deriveCommitSuggestion({ files = [], slices = [], suggestedCommi
     };
   }
 
-  const activeSlices = slices.filter((s) => s.files.some((sf) => targetPaths.has(sf.filePath)));
-  if (activeSlices.length === 1) {
+  const activeTopics = topics.filter((t) => t.files.some((tf) => targetPaths.has(tf.filePath)));
+  if (activeTopics.length === 1) {
     return {
-      subject: activeSlices[0].title,
-      body: activeSlices[0].rationale || "",
+      subject: activeTopics[0].title,
+      body: activeTopics[0].rationale || "",
     };
   }
-  if (activeSlices.length > 1) {
+  if (activeTopics.length > 1) {
     return {
-      subject: activeSlices[0].title,
-      body: activeSlices.map((s) => `- ${s.title}`).join("\n"),
+      subject: activeTopics[0].title,
+      body: activeTopics.map((t) => `- ${t.title}`).join("\n"),
     };
   }
 
@@ -1389,7 +1334,7 @@ export function buildGitCommitCommands({ subject, body = "", hasStagedFiles = fa
   return hasStagedFiles ? [commitArgs] : [["add", "-A"], commitArgs];
 }
 
-export function computeFooterCounts(files = [], slices = [], threads = []) {
+export function computeFooterCounts(files = [], topics = [], threads = []) {
   let staged = 0;
   let unstaged = 0;
   for (const f of files) {
@@ -1400,7 +1345,7 @@ export function computeFooterCounts(files = [], slices = [], threads = []) {
   return {
     staged,
     unstaged,
-    slices: slices.length,
+    topics: topics.length,
     ...threadStats,
   };
 }

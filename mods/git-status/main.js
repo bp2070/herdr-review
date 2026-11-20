@@ -34,15 +34,14 @@ import {
 } from "herdr";
 import {
   GIT_READ_ARGS,
-  LEGACY_NOTES_FILENAME,
   MOD_NAME,
   REVIEW_FILENAME,
   SHARED_BUMP_KEY,
-  UNATTRIBUTED_SLICE_ID,
+  UNATTRIBUTED_TOPIC_ID,
   addCommentToDocument,
   buildFullFileDiffLines,
   buildGitCommitCommands,
-  buildSliceGroups,
+  buildTopicGroups,
   buildUntrackedDiffLines,
   computeFooterCounts,
   countLines,
@@ -50,7 +49,7 @@ import {
   deriveCommitSuggestion,
   deriveOverviewInfo,
   emptyReviewDocument,
-  extractNoteDiffInfo,
+  extractDiffHunkInfo,
   filterFilesForReview,
   formatRelativeTime,
   formatReviewDispatchPrompt,
@@ -65,7 +64,7 @@ import {
   planPaneToggle,
   promoteDraftThreadsToOpen,
   pruneCleanStateInDocument,
-  removeSliceFromDocument,
+  removeTopicFromDocument,
   resolvePalette,
   resolveWorkspaceLocation,
   setThreadStatusInDocument,
@@ -73,7 +72,7 @@ import {
   stageAllCommandArgs,
   stageCommandArgs,
   stagePathsCommandArgs,
-  upsertSlicesInDocument,
+  upsertTopicsInDocument,
   withAlpha,
 } from "./model.js";
 
@@ -92,16 +91,11 @@ function spaceAgents(spaceId) {
   return inSpace.length > 0 ? inSpace : all;
 }
 
-async function mutateReviewFile(reviewPath, legacyPath, on, mutator) {
+async function mutateReviewFile(reviewPath, on, mutator) {
   if (!reviewPath) throw new Error("Git directory is not available.");
   for (let attempt = 0; attempt < 3; attempt++) {
     const existing = await readTextFile(reviewPath, { on }).catch(() => null);
-    let seed = existing ?? "";
-    if (!seed.trim() && legacyPath) {
-      const legacy = await readTextFile(legacyPath, { on }).catch(() => null);
-      if (legacy) seed = legacy;
-    }
-    const result = mutator(seed);
+    const result = mutator(existing ?? "");
     if (!on) {
       try {
         await writeTextFile(reviewPath, result.text, existing);
@@ -142,8 +136,8 @@ export default class GitReviewView extends View {
     this.copyProps = p;
     this.overlayId = p.overlay ?? null;
     this.role = this.overlayId
-      ? p.role === "add-slice"
-        ? "add-slice"
+      ? p.role === "add-topic"
+        ? "add-topic"
         : p.role === "commit"
           ? "commit"
           : "runner"
@@ -168,8 +162,8 @@ export default class GitReviewView extends View {
       return;
     }
 
-    if (this.role === "add-slice") {
-      this.initAddSliceDialog(p, cx);
+    if (this.role === "add-topic") {
+      this.initAddTopicDialog(p, cx);
       return;
     }
 
@@ -182,9 +176,9 @@ export default class GitReviewView extends View {
   }
 
   // ===========================================================================
-  // ADD / EDIT CHANGE SLICE DIALOG (`role === "add-slice"`)
+  // ADD CHANGE TOPIC DIALOG (`role === "add-topic"`)
   // ===========================================================================
-  initAddSliceDialog(p, cx) {
+  initAddTopicDialog(p, cx) {
     this.handle = cx.focus_handle();
     this.dialogFiles = Array.isArray(p.files) ? p.files : [];
     const initialSelected = p.initialPaths?.length
@@ -193,13 +187,13 @@ export default class GitReviewView extends View {
         ? [this.dialogFiles[0].path]
         : [];
 
-    this.selectedSlicePaths = new Set(initialSelected);
-    this.sliceTitle = "";
-    this.sliceRationale = "";
-    this.sliceAgent = p.defaultAgent || "pi";
-    this.sliceCommitSubject = p.suggestedSubject || "";
+    this.selectedTopicPaths = new Set(initialSelected);
+    this.topicTitle = "";
+    this.topicRationale = "";
+    this.topicAgent = p.defaultAgent || "pi";
+    this.topicCommitSubject = p.suggestedSubject || "";
     this.dialogError = "";
-    this.savingSlice = false;
+    this.savingTopic = false;
     this.focusedField = "title";
 
     this.titleInput = InputState.new({
@@ -207,7 +201,7 @@ export default class GitReviewView extends View {
       placeholder: "e.g. Thread tenantId through session validation & routes",
     });
     this.titleInput.on("change", (_e, cx) => {
-      this.sliceTitle = this.titleInput.value();
+      this.topicTitle = this.titleInput.value();
       this.dialogError = "";
       cx.notify();
     });
@@ -215,7 +209,7 @@ export default class GitReviewView extends View {
       this.focusedField = "title";
       cx.notify();
     });
-    this.titleInput.on("submit", (_e, cx) => this.submitSliceDialog(cx));
+    this.titleInput.on("submit", (_e, cx) => this.submitTopicDialog(cx));
 
     this.rationaleArea = TextareaState.new({
       value: "",
@@ -223,7 +217,7 @@ export default class GitReviewView extends View {
       placeholder: "Optional rationale: why these changes belong together or key trade-offs...",
     });
     this.rationaleArea.on("change", (_e, cx) => {
-      this.sliceRationale = this.rationaleArea.value();
+      this.topicRationale = this.rationaleArea.value();
       cx.notify();
     });
     this.rationaleArea.on("focus", (_e, cx) => {
@@ -232,11 +226,11 @@ export default class GitReviewView extends View {
     });
 
     this.commitSuggestInput = InputState.new({
-      value: this.sliceCommitSubject,
+      value: this.topicCommitSubject,
       placeholder: "Optional suggested commit message subject",
     });
     this.commitSuggestInput.on("change", (_e, cx) => {
-      this.sliceCommitSubject = this.commitSuggestInput.value();
+      this.topicCommitSubject = this.commitSuggestInput.value();
       cx.notify();
     });
     this.commitSuggestInput.on("focus", (_e, cx) => {
@@ -251,32 +245,31 @@ export default class GitReviewView extends View {
   }
 
   toggleDialogPath(filePath, cx) {
-    if (this.selectedSlicePaths.has(filePath)) {
-      this.selectedSlicePaths.delete(filePath);
+    if (this.selectedTopicPaths.has(filePath)) {
+      this.selectedTopicPaths.delete(filePath);
     } else {
-      this.selectedSlicePaths.add(filePath);
+      this.selectedTopicPaths.add(filePath);
     }
     this.dialogError = "";
     cx.notify();
   }
 
-  submitSliceDialog(cx) {
-    if (this.savingSlice) return;
+  submitTopicDialog(cx) {
+    if (this.savingTopic) return;
     const p = this.copyProps ?? {};
     const reviewPath = p.reviewPath;
-    const legacyPath = p.legacyPath;
     const root = p.root || "";
     const on = p.on ?? null;
-    const title = this.sliceTitle.trim();
-    const paths = [...this.selectedSlicePaths].map((fp) => normalizeRepoPath(fp, root)).filter(Boolean);
+    const title = this.topicTitle.trim();
+    const paths = [...this.selectedTopicPaths].map((fp) => normalizeRepoPath(fp, root)).filter(Boolean);
 
     if (!title) {
-      this.dialogError = "Enter a 1-line summary headline for this slice.";
+      this.dialogError = "Enter a 1-line summary headline for this topic.";
       cx.notify();
       return;
     }
     if (paths.length === 0) {
-      this.dialogError = "Select at least one changed file for this slice.";
+      this.dialogError = "Select at least one changed file for this topic.";
       cx.notify();
       return;
     }
@@ -286,13 +279,12 @@ export default class GitReviewView extends View {
       return;
     }
 
-    this.savingSlice = true;
+    this.savingTopic = true;
     this.dialogError = "";
     cx.notify();
 
     cx.spawn(async (cx) => {
       try {
-        // Capture live diff hunks for selected files
         const filesWithHunks = await Promise.all(
           paths.map(async (fp) => {
             const entry = this.dialogFiles.find((f) => f.path === fp);
@@ -322,47 +314,47 @@ export default class GitReviewView extends View {
           }),
         );
 
-        const suggestedCommit = this.sliceCommitSubject.trim()
-          ? { subject: this.sliceCommitSubject.trim(), agentName: this.sliceAgent }
+        const suggestedCommit = this.topicCommitSubject.trim()
+          ? { subject: this.topicCommitSubject.trim(), agentName: this.topicAgent }
           : undefined;
 
-        const saved = await mutateReviewFile(reviewPath, legacyPath, on, (seed) =>
-          upsertSlicesInDocument(seed, {
-            slices: [
+        const saved = await mutateReviewFile(reviewPath, on, (seed) =>
+          upsertTopicsInDocument(seed, {
+            topics: [
               {
                 title,
-                rationale: this.sliceRationale.trim(),
-                agentName: this.sliceAgent,
+                rationale: this.topicRationale.trim(),
+                agentName: this.topicAgent,
                 files: filesWithHunks,
               },
             ],
             suggestedCommit,
             nowIso: new Date().toISOString(),
-            createId: () => `s-${randomUUID().slice(0, 8)}`,
+            createId: () => `tpc-${randomUUID().slice(0, 8)}`,
           }),
         );
 
         setShared(SHARED_BUMP_KEY, {
           at: Date.now(),
-          expandSliceId: saved.upserted[0]?.id,
+          expandTopicId: saved.upserted[0]?.id,
         });
         if (this.overlayId) closeOverlay(this.overlayId);
       } catch (err) {
         this.dialogError = String(err?.message ?? err);
-        this.savingSlice = false;
+        this.savingTopic = false;
         cx.notify();
       }
     });
   }
 
-  renderAddSliceDialog() {
+  renderAddTopicDialog() {
     const p = resolvePalette(theme());
     const mono = monoFontFamily();
     const stop = (_e, cx) => cx.stop_propagation();
     const label = (text) => div().pb(4).font_family(mono).text_size(11).text_color(p.subtext).child(text);
 
     return v_flex()
-      .id("add-slice-dialog")
+      .id("add-topic-dialog")
       .track_focus(this.handle)
       .w_full()
       .min_h(0)
@@ -390,11 +382,11 @@ export default class GitReviewView extends View {
               .gap(7)
               .items_center()
               .child(icon("layers", 14).text_color(p.mauve))
-              .child(div().font_semibold().text_size(12).child("Create Logical Change Slice")),
+              .child(div().font_semibold().text_size(12).child("Create Change Topic")),
           )
           .child(
             div()
-              .id("add-slice-close")
+              .id("add-topic-close")
               .size(24)
               .flex()
               .items_center()
@@ -416,10 +408,10 @@ export default class GitReviewView extends View {
           .gap(10)
           .child(
             v_flex()
-              .child(label("Slice Summary Headline"))
+              .child(label("Topic Summary Headline"))
               .child(
                 div()
-                  .id("slice-title-box")
+                  .id("topic-title-box")
                   .h(30)
                   .px(8)
                   .flex()
@@ -434,10 +426,10 @@ export default class GitReviewView extends View {
           )
           .child(
             v_flex()
-              .child(label(`Files in this Slice (${this.selectedSlicePaths.size} selected)`))
+              .child(label(`Files in this Topic (${this.selectedTopicPaths.size} selected)`))
               .child(
                 v_flex()
-                  .id("slice-files-pick")
+                  .id("topic-files-pick")
                   .max_h(132)
                   .p(4)
                   .gap(2)
@@ -448,9 +440,9 @@ export default class GitReviewView extends View {
                   .overflow_y_scrollbar()
                   .children(
                     this.dialogFiles.map((f, idx) => {
-                      const checked = this.selectedSlicePaths.has(f.path);
+                      const checked = this.selectedTopicPaths.has(f.path);
                       return h_flex()
-                        .id(`sf-pick-${idx}`)
+                        .id(`tf-pick-${idx}`)
                         .h(24)
                         .px(6)
                         .gap(6)
@@ -482,7 +474,7 @@ export default class GitReviewView extends View {
               .child(label("Optional Rationale"))
               .child(
                 div()
-                  .id("slice-rationale-box")
+                  .id("topic-rationale-box")
                   .h(52)
                   .p(6)
                   .rounded(5)
@@ -498,7 +490,7 @@ export default class GitReviewView extends View {
               .child(label("Suggested Commit Subject"))
               .child(
                 div()
-                  .id("slice-commit-box")
+                  .id("topic-commit-box")
                   .h(28)
                   .px(8)
                   .flex()
@@ -524,7 +516,7 @@ export default class GitReviewView extends View {
               .border_color(p.border)
               .child(
                 h_flex()
-                  .id("slice-cancel-btn")
+                  .id("topic-cancel-btn")
                   .h(28)
                   .px(12)
                   .items_center()
@@ -543,7 +535,7 @@ export default class GitReviewView extends View {
               )
               .child(
                 h_flex()
-                  .id("slice-save-btn")
+                  .id("topic-save-btn")
                   .h(28)
                   .px(12)
                   .items_center()
@@ -554,8 +546,8 @@ export default class GitReviewView extends View {
                   .cursor_pointer()
                   .hover((s) => s.opacity(0.9))
                   .on_mouse_down("left", stop)
-                  .on_click((_e, cx) => this.submitSliceDialog(cx))
-                  .child(this.savingSlice ? "Saving…" : "Save Slice"),
+                  .on_click((_e, cx) => this.submitTopicDialog(cx))
+                  .child(this.savingTopic ? "Saving…" : "Save Topic"),
               ),
           ),
       );
@@ -567,7 +559,7 @@ export default class GitReviewView extends View {
   initCommitDialog(p, cx) {
     this.handle = cx.focus_handle();
     this.dlgFiles = Array.isArray(p.files) ? p.files : [];
-    this.dlgSlices = Array.isArray(p.slices) ? p.slices : [];
+    this.dlgTopics = Array.isArray(p.topics) ? p.topics : [];
     this.dlgSuggestedCommit = p.suggestedCommit || null;
     this.dlgUnresolvedCount = Number(p.unresolvedTotal) || 0;
     this.dlgBranch = p.branch || "";
@@ -626,7 +618,7 @@ export default class GitReviewView extends View {
       : this.dlgFiles;
     return deriveCommitSuggestion({
       files: scopedFiles,
-      slices: this.dlgSlices,
+      topics: this.dlgTopics,
       suggestedCommit: this.dlgSuggestedCommit,
     });
   }
@@ -659,7 +651,6 @@ export default class GitReviewView extends View {
     const root = p.root;
     const on = p.on ?? null;
     const reviewPath = p.reviewPath;
-    const legacyPath = p.legacyPath;
 
     if (!subject) {
       this.dlgError = "Enter a commit subject.";
@@ -698,7 +689,7 @@ export default class GitReviewView extends View {
             postStatus.code === 0
               ? new Set(parsePorcelainStatusZ(postStatus.stdout, 10000).entries.map((e) => e.path))
               : new Set();
-          await mutateReviewFile(reviewPath, legacyPath, on, (seed) =>
+          await mutateReviewFile(reviewPath, on, (seed) =>
             pruneCleanStateInDocument(seed, remainingPaths, { dropResolvedThreads: true }),
           ).catch(() => {});
         }
@@ -1001,7 +992,6 @@ export default class GitReviewView extends View {
     this.root = null;
     this.gitDir = null;
     this.reviewPath = null;
-    this.legacyPath = null;
     this.on = null;
     this.branch = null;
     this.hasHead = true;
@@ -1010,19 +1000,18 @@ export default class GitReviewView extends View {
     this.limited = false;
     this.reviewDoc = emptyReviewDocument();
 
-    this.viewMode = "SLICE"; // "SLICE" | "FILE"
+    this.viewMode = "TOPIC"; // "TOPIC" | "FILE"
     this.filter = "ALL"; // "ALL" | "STAGED" | "UNSTAGED" | "OPEN"
     this.query = "";
     this.searchFocused = false;
 
-    this.expandedSlices = new Set();
-    this.expandedItemDiffs = new Set(); // key: `${sliceId}::${filePath}` or `file::${filePath}`
-    this.forceFullDiffKeys = new Set(); // keys toggled from slice hunk -> full git diff
+    this.expandedTopics = new Set();
+    this.expandedItemDiffs = new Set(); // key: `${topicId}::${filePath}` or `file::${filePath}`
+    this.forceFullDiffKeys = new Set(); // keys toggled from topic hunk -> full git diff
     this.fullDiffCache = new Map(); // filePath -> { loading, rows, error }
     this.autoExpandedRepo = "";
 
     // Inline comment / reply composer state
-    // composerTarget: null | { key, threadId?, sliceId?, filePath?, lineNumber?, lineRange?, codeExcerpt? }
     this.composerTarget = null;
     this.composerText = "";
     this.composerFocused = false;
@@ -1041,15 +1030,13 @@ export default class GitReviewView extends View {
     this.pendingRefresh = false;
     this.error = null;
     this.actionError = null;
-    this.actionSuccess = null;
     this.watches = [];
     this.watchedKey = "";
     this.lastSeenBump = shared(SHARED_BUMP_KEY)?.at ?? null;
 
-    // Retained inputs (always created in init, never in render)
     this.searchInput = InputState.new({
       value: "",
-      placeholder: "Filter slice, file, comment...",
+      placeholder: "Filter topic, file, comment...",
     });
     this.searchInput.on("change", (_e, cx) => {
       this.query = this.searchInput.value();
@@ -1093,8 +1080,8 @@ export default class GitReviewView extends View {
           cx.notify();
         } else if (cmd === "refresh") {
           this.refresh(cx, true);
-        } else if (cmd === "add-slice" || cmd === "add-note") {
-          this.openAddSliceModal();
+        } else if (cmd === "add-topic") {
+          this.openAddTopicModal();
         } else if (cmd === "commit") {
           this.openCommitModal();
         } else if (cmd === "submit-review") {
@@ -1185,22 +1172,19 @@ export default class GitReviewView extends View {
       this.root = null;
       this.gitDir = null;
       this.reviewPath = null;
-      this.legacyPath = null;
       this.files = [];
       this.reviewDoc = emptyReviewDocument();
       this.fullDiffCache.clear();
-      this.expandedSlices.clear();
+      this.expandedTopics.clear();
       this.expandedItemDiffs.clear();
       this.composerTarget = null;
       this.error = null;
       this.actionError = null;
-      this.actionSuccess = null;
       this.stopWatches();
     }
 
     if (manual) {
       this.actionError = null;
-      this.actionSuccess = null;
       this.fullDiffCache.clear();
     }
 
@@ -1226,7 +1210,6 @@ export default class GitReviewView extends View {
           this.root = null;
           this.gitDir = null;
           this.reviewPath = null;
-          this.legacyPath = null;
           this.branch = null;
           this.files = [];
           this.reviewDoc = emptyReviewDocument();
@@ -1238,10 +1221,9 @@ export default class GitReviewView extends View {
         const root = topRes.stdout.trim();
         const gitDir = gitDirRes.stdout.trim();
         const reviewPath = joinPosixPath(gitDir, REVIEW_FILENAME);
-        const legacyPath = joinPosixPath(gitDir, LEGACY_NOTES_FILENAME);
         const gitRead = (args) => exec("git", [...GIT_READ_ARGS, ...args], { cwd: root, on: loc.on });
 
-        const [statusRes, headRes, branchRes, stagedStatRes, unstagedStatRes, reviewRaw, legacyRaw] =
+        const [statusRes, headRes, branchRes, stagedStatRes, unstagedStatRes, reviewRaw] =
           await Promise.all([
             gitRead(["status", "--porcelain=v1", "-z", "--untracked-files=all"]),
             gitRead(["rev-parse", "--verify", "HEAD"]),
@@ -1249,7 +1231,6 @@ export default class GitReviewView extends View {
             gitRead(["diff", "--cached", "--numstat", "-z", "--no-renames"]),
             gitRead(["diff", "--numstat", "-z", "--no-renames"]),
             readTextFile(reviewPath, { on: loc.on }).catch(() => null),
-            readTextFile(legacyPath, { on: loc.on }).catch(() => null),
           ]);
 
         if (locationKey(this.currentLocation()) !== ctxKey) return;
@@ -1280,12 +1261,11 @@ export default class GitReviewView extends View {
           unstagedStats,
           untrackedLineCounts,
         );
-        const reviewDoc = parseReviewDocument(reviewRaw ?? "", legacyRaw ?? "");
+        const reviewDoc = parseReviewDocument(reviewRaw ?? "");
 
         this.root = root;
         this.gitDir = gitDir;
         this.reviewPath = reviewPath;
-        this.legacyPath = legacyPath;
         this.hasHead = headRes.code === 0;
         this.branch =
           branchRes.code === 0 ? branchRes.stdout.trim() : loc.branch || (this.hasHead ? "detached" : "main");
@@ -1294,18 +1274,16 @@ export default class GitReviewView extends View {
         this.reviewDoc = reviewDoc;
         this.error = null;
 
-        // Auto-expand slices on first load of a repo so review starts open and readable
         if (this.autoExpandedRepo !== root) {
           this.autoExpandedRepo = root;
-          for (const s of reviewDoc.slices.slice(0, 5)) {
-            this.expandedSlices.add(s.id);
+          for (const t of reviewDoc.topics.slice(0, 5)) {
+            this.expandedTopics.add(t.id);
           }
-          if (reviewDoc.slices.length === 0 && files.length > 0) {
-            this.expandedSlices.add(UNATTRIBUTED_SLICE_ID);
+          if (reviewDoc.topics.length === 0 && files.length > 0) {
+            this.expandedTopics.add(UNATTRIBUTED_TOPIC_ID);
           }
         }
 
-        // Reload any open full-file diffs
         const neededPaths = new Set();
         for (const key of this.expandedItemDiffs) {
           const idx = key.indexOf("::");
@@ -1399,12 +1377,12 @@ export default class GitReviewView extends View {
   }
 
   // ===========================================================================
-  // STAGING, SLICE ACTIONS, COMMENTS, REVIEW DISPATCH, & COMMIT
+  // STAGING, TOPIC ACTIONS, COMMENTS, REVIEW DISPATCH, & COMMIT MODAL
   // ===========================================================================
 
-  toggleSliceExpand(sliceId, cx) {
-    if (this.expandedSlices.has(sliceId)) this.expandedSlices.delete(sliceId);
-    else this.expandedSlices.add(sliceId);
+  toggleTopicExpand(topicId, cx) {
+    if (this.expandedTopics.has(topicId)) this.expandedTopics.delete(topicId);
+    else this.expandedTopics.add(topicId);
     cx.notify();
   }
 
@@ -1443,10 +1421,10 @@ export default class GitReviewView extends View {
   }
 
   toggleExpandAll(groups, visibleFiles, cx) {
-    if (this.viewMode === "SLICE") {
-      const anyOpen = groups.some((g) => this.expandedSlices.has(g.id));
-      if (anyOpen) this.expandedSlices.clear();
-      else for (const g of groups) this.expandedSlices.add(g.id);
+    if (this.viewMode === "TOPIC") {
+      const anyOpen = groups.some((g) => this.expandedTopics.has(g.id));
+      if (anyOpen) this.expandedTopics.clear();
+      else for (const g of groups) this.expandedTopics.add(g.id);
     } else {
       const anyOpen = visibleFiles.some((f) => this.expandedItemDiffs.has(`file::${f.path}`));
       if (anyOpen) {
@@ -1495,7 +1473,7 @@ export default class GitReviewView extends View {
     this.runGitStageMutation(stageCommandArgs(file, this.hasHead), cx);
   }
 
-  toggleStageSlice(group, cx) {
+  toggleStageTopic(group, cx) {
     const shouldStage = !group.staged;
     this.runGitStageMutation(stagePathsCommandArgs(group.gitFiles, shouldStage, this.hasHead), cx);
   }
@@ -1504,7 +1482,7 @@ export default class GitReviewView extends View {
     this.runGitStageMutation(stageAllCommandArgs(this.files, this.hasHead), cx);
   }
 
-  openAddSliceModal(initialPaths = []) {
+  openAddTopicModal(initialPaths = []) {
     if (!this.root || !this.reviewPath) {
       notify({
         title: "Git Review",
@@ -1523,10 +1501,9 @@ export default class GitReviewView extends View {
       width: 480,
       height: 465,
       props: {
-        role: "add-slice",
+        role: "add-topic",
         root: this.root,
         reviewPath: this.reviewPath,
-        legacyPath: this.legacyPath,
         on: this.on,
         files: this.files.map((f) => ({ path: f.path, name: f.name, fresh: f.fresh })),
         initialPaths,
@@ -1536,14 +1513,51 @@ export default class GitReviewView extends View {
     });
   }
 
-  deleteSlice(sliceId, cx) {
-    if (!this.reviewPath || sliceId === UNATTRIBUTED_SLICE_ID) return;
+  openCommitModal() {
+    if (!this.root || !this.files.length) {
+      notify({
+        title: "Git Review",
+        body: this.root ? "No uncommitted changes to commit." : "Open a Git repository first.",
+        level: "info",
+      });
+      return;
+    }
+    const counts = computeFooterCounts(
+      this.files,
+      this.reviewDoc.topics,
+      this.reviewDoc.threads,
+    );
+    openOverlay({
+      mod: MOD_NAME,
+      kind: "dialog",
+      width: 510,
+      height: 405,
+      props: {
+        role: "commit",
+        root: this.root,
+        on: this.on,
+        branch: this.branch,
+        reviewPath: this.reviewPath,
+        files: this.files.map((f) => ({
+          path: f.path,
+          name: f.name,
+          hasStaged: f.hasStaged,
+          hasUnstaged: f.hasUnstaged,
+        })),
+        topics: this.reviewDoc.topics,
+        suggestedCommit: this.reviewDoc.suggestedCommit,
+        unresolvedTotal: counts.unresolvedTotal,
+      },
+    });
+  }
+
+  deleteTopic(topicId, cx) {
+    if (!this.reviewPath || topicId === UNATTRIBUTED_TOPIC_ID) return;
     const reviewPath = this.reviewPath;
-    const legacyPath = this.legacyPath;
     const on = this.on;
     cx.spawn(async (cx) => {
       try {
-        await mutateReviewFile(reviewPath, legacyPath, on, (seed) => removeSliceFromDocument(seed, sliceId));
+        await mutateReviewFile(reviewPath, on, (seed) => removeTopicFromDocument(seed, topicId));
         setShared(SHARED_BUMP_KEY, { at: Date.now() });
         this.refresh(cx);
       } catch (err) {
@@ -1582,7 +1596,6 @@ export default class GitReviewView extends View {
     if (!target || !body || !this.reviewPath) return;
 
     const reviewPath = this.reviewPath;
-    const legacyPath = this.legacyPath;
     const on = this.on;
 
     this.composerTarget = null;
@@ -1592,12 +1605,12 @@ export default class GitReviewView extends View {
 
     cx.spawn(async (cx) => {
       try {
-        await mutateReviewFile(reviewPath, legacyPath, on, (seed) =>
+        await mutateReviewFile(reviewPath, on, (seed) =>
           addCommentToDocument(
             seed,
             {
               threadId: target.threadId || "",
-              sliceId: target.sliceId && target.sliceId !== UNATTRIBUTED_SLICE_ID ? target.sliceId : "",
+              topicId: target.topicId && target.topicId !== UNATTRIBUTED_TOPIC_ID ? target.topicId : "",
               filePath: target.filePath || "",
               lineNumber: target.lineNumber ?? null,
               lineRange: target.lineRange || "",
@@ -1625,11 +1638,10 @@ export default class GitReviewView extends View {
   setThreadStatus(threadId, status, cx) {
     if (!this.reviewPath) return;
     const reviewPath = this.reviewPath;
-    const legacyPath = this.legacyPath;
     const on = this.on;
     cx.spawn(async (cx) => {
       try {
-        await mutateReviewFile(reviewPath, legacyPath, on, (seed) =>
+        await mutateReviewFile(reviewPath, on, (seed) =>
           setThreadStatusInDocument(seed, threadId, status, new Date().toISOString()),
         );
         setShared(SHARED_BUMP_KEY, { at: Date.now() });
@@ -1644,11 +1656,10 @@ export default class GitReviewView extends View {
   deleteThread(threadId, cx) {
     if (!this.reviewPath) return;
     const reviewPath = this.reviewPath;
-    const legacyPath = this.legacyPath;
     const on = this.on;
     cx.spawn(async (cx) => {
       try {
-        await mutateReviewFile(reviewPath, legacyPath, on, (seed) => deleteThreadFromDocument(seed, threadId));
+        await mutateReviewFile(reviewPath, on, (seed) => deleteThreadFromDocument(seed, threadId));
         setShared(SHARED_BUMP_KEY, { at: Date.now() });
         this.refresh(cx);
       } catch (err) {
@@ -1679,7 +1690,7 @@ export default class GitReviewView extends View {
   }
 
   copyReviewPrompt(cx) {
-    const prompt = formatReviewDispatchPrompt(this.reviewDoc.threads, this.reviewDoc.slices);
+    const prompt = formatReviewDispatchPrompt(this.reviewDoc.threads, this.reviewDoc.topics);
     if (!prompt) return;
     cx.write_to_clipboard(prompt);
     this.copiedFeedbackUntil = Date.now() + 2000;
@@ -1694,7 +1705,6 @@ export default class GitReviewView extends View {
   submitReviewToAgent(cx) {
     if (this.submittingReview || !this.reviewPath) return;
     const reviewPath = this.reviewPath;
-    const legacyPath = this.legacyPath;
     const on = this.on;
     const loc = this.currentLocation();
     const targetAgent = this.resolvedTargetAgent(loc.spaceId);
@@ -1705,10 +1715,10 @@ export default class GitReviewView extends View {
 
     cx.spawn(async (cx) => {
       try {
-        const promoted = await mutateReviewFile(reviewPath, legacyPath, on, (seed) =>
+        const promoted = await mutateReviewFile(reviewPath, on, (seed) =>
           promoteDraftThreadsToOpen(seed, new Date().toISOString()),
         );
-        const prompt = formatReviewDispatchPrompt(promoted.doc.threads, promoted.doc.slices);
+        const prompt = formatReviewDispatchPrompt(promoted.doc.threads, promoted.doc.topics);
         if (!prompt) {
           this.actionError = "No draft or open review comments to submit.";
           return;
@@ -1752,47 +1762,8 @@ export default class GitReviewView extends View {
     });
   }
 
-  openCommitModal() {
-    if (!this.root || !this.files.length) {
-      notify({
-        title: "Git Review",
-        body: this.root ? "No uncommitted changes to commit." : "Open a Git repository first.",
-        level: "info",
-      });
-      return;
-    }
-    const counts = computeFooterCounts(
-      this.files,
-      this.reviewDoc.slices,
-      this.reviewDoc.threads,
-    );
-    openOverlay({
-      mod: MOD_NAME,
-      kind: "dialog",
-      width: 510,
-      height: 405,
-      props: {
-        role: "commit",
-        root: this.root,
-        on: this.on,
-        branch: this.branch,
-        reviewPath: this.reviewPath,
-        legacyPath: this.legacyPath,
-        files: this.files.map((f) => ({
-          path: f.path,
-          name: f.name,
-          hasStaged: f.hasStaged,
-          hasUnstaged: f.hasUnstaged,
-        })),
-        slices: this.reviewDoc.slices,
-        suggestedCommit: this.reviewDoc.suggestedCommit,
-        unresolvedTotal: counts.unresolvedTotal,
-      },
-    });
-  }
-
   // ===========================================================================
-  // RENDERING HELPERS: THREADS, COMPOSER, DIFF ROWS, SLICES, & DOCKS
+  // RENDERING HELPERS: OVERVIEW, THREADS, COMPOSER, DIFFS, TOPICS, & DISPATCH
   // ===========================================================================
 
   statusBadgeColors(status, p) {
@@ -1820,6 +1791,93 @@ export default class GitReviewView extends View {
       default:
         return { label: "Resolved", fg: p.dim, bg: withAlpha(p.surface0, "44"), border: p.border };
     }
+  }
+
+  renderOverviewCard(counts, p, mono, nowMs) {
+    const info = deriveOverviewInfo({
+      files: this.files,
+      topics: this.reviewDoc.topics,
+      overview: this.reviewDoc.overview,
+    });
+    if (!info) return null;
+
+    const relTime = info.updatedAt ? formatRelativeTime(info.updatedAt, nowMs) : "";
+
+    return v_flex()
+      .flex_none()
+      .px(8)
+      .py(6)
+      .gap(4)
+      .bg(withAlpha(p.surface0, "4d"))
+      .border_b(1)
+      .border_color(p.border)
+      .child(
+        h_flex()
+          .id("overview-toggle")
+          .items_center()
+          .justify_between()
+          .gap(6)
+          .cursor_pointer()
+          .on_click((_e, cx) => {
+            this.overviewExpanded = !this.overviewExpanded;
+            cx.notify();
+          })
+          .child(
+            h_flex()
+              .gap(5)
+              .items_center()
+              .font_family(mono)
+              .text_size(10)
+              .child(
+                icon(this.overviewExpanded ? "chevron-down" : "chevron-right", 11).text_color(p.dim),
+              )
+              .child(icon("sparkles", 11).text_color(p.mauve))
+              .child(div().font_bold().text_color(p.text).child("Overall Summary"))
+              .child(div().text_color(p.dim).child("•"))
+              .child(div().text_color(p.subtext).child(`${this.files.length}f`))
+              .when(counts.topics > 0, (el) =>
+                el.child(
+                  div()
+                    .text_color(p.subtext)
+                    .child(`· ${counts.topics} topic${counts.topics === 1 ? "" : "s"}`),
+                ),
+              )
+              .child(
+                h_flex()
+                  .gap(1)
+                  .child(div().text_color(p.green).child(`+${info.additions}`))
+                  .child(div().text_color(p.dim).child("/"))
+                  .child(div().text_color(p.red).child(`-${info.deletions}`)),
+              ),
+          )
+          .child(
+            h_flex()
+              .gap(4)
+              .items_center()
+              .font_family(mono)
+              .text_size(9.5)
+              .text_color(p.dim)
+              .when(Boolean(info.agentName), (el) =>
+                el.child(div().text_color(p.mauve).font_semibold().child(info.agentName)),
+              )
+              .when(Boolean(relTime), (el) =>
+                el.child(div().child("•")).child(div().child(relTime)),
+              ),
+          ),
+      )
+      .when(this.overviewExpanded, (el) =>
+        el.child(
+          div()
+            .id("overview-body")
+            .max_h(88)
+            .pl(16)
+            .pr(4)
+            .overflow_y_scrollbar()
+            .text_size(11.5)
+            .text_color(info.synthesized ? p.subtext : p.text)
+            .child(info.text),
+        ),
+      );
   }
 
   renderInlineComposer(keyPrefix, p, mono) {
@@ -1856,7 +1914,7 @@ export default class GitReviewView extends View {
                   ? `Comment on ${target.filePath || ""} (${target.lineRange})`
                   : target.filePath
                     ? `Comment on ${target.filePath}`
-                    : "Comment on Slice",
+                    : "Comment on Topic",
             ),
           )
           .child(
@@ -1973,7 +2031,7 @@ export default class GitReviewView extends View {
                       {
                         key: replyKey,
                         threadId: thread.id,
-                        sliceId: thread.sliceId || "",
+                        topicId: thread.topicId || "",
                         filePath: thread.filePath || "",
                         lineRange: thread.lineRange || "",
                       },
@@ -2042,7 +2100,7 @@ export default class GitReviewView extends View {
       );
   }
 
-  renderInteractiveDiffBlock({ diffKey, sliceId, filePath, rows, threads, p, mono, nowMs }) {
+  renderInteractiveDiffBlock({ diffKey, topicId, filePath, rows, threads, p, mono, nowMs }) {
     const stop = (_e, cx) => cx.stop_propagation();
     const threadsByLine = new Map();
     for (const t of threads) {
@@ -2112,7 +2170,7 @@ export default class GitReviewView extends View {
                       this.openComposer(
                         {
                           key: lineKey,
-                          sliceId,
+                          topicId,
                           filePath,
                           lineNumber: lineNum,
                           lineRange,
@@ -2153,19 +2211,18 @@ export default class GitReviewView extends View {
       );
   }
 
-  renderFileItemRow({ sliceId, item, p, mono, nowMs }) {
+  renderFileItemRow({ topicId, item, p, mono, nowMs }) {
     const file = item.gitFile;
-    const diffKey = `${sliceId}::${file.path}`;
+    const diffKey = `${topicId}::${file.path}`;
     const isDiffOpen = this.expandedItemDiffs.has(diffKey);
     const forceFull = this.forceFullDiffKeys.has(diffKey);
-    const hunkInfo = extractNoteDiffInfo(item);
+    const hunkInfo = extractDiffHunkInfo(item);
     const needsLiveDiff = !hunkInfo.hasDiff || forceFull;
     const fullDiffEntry = this.fullDiffCache.get(file.path);
     const badge = this.statusBadgeColors(file.status, p);
     const fileCommentKey = `file-cmt::${diffKey}`;
     const stop = (_e, cx) => cx.stop_propagation();
 
-    // Threads anchored to this file without a specific lineNumber (or whose line isn't currently expanded)
     const fileLevelThreads = item.threads.filter((t) => !t.lineNumber || !isDiffOpen);
     const activeFileThreads = item.threads.filter((t) => t.status !== "resolved");
 
@@ -2301,7 +2358,7 @@ export default class GitReviewView extends View {
                     this.openComposer(
                       {
                         key: fileCommentKey,
-                        sliceId,
+                        topicId,
                         filePath: file.path,
                         lineRange: hunkInfo.lineRange || "",
                       },
@@ -2359,7 +2416,7 @@ export default class GitReviewView extends View {
                 .child(
                   div().child(
                     !needsLiveDiff
-                      ? `Slice diff hunk${hunkInfo.lineRange ? ` (${hunkInfo.lineRange})` : ""} · click any line to comment`
+                      ? `Topic diff hunk${hunkInfo.lineRange ? ` (${hunkInfo.lineRange})` : ""} · click any line to comment`
                       : "Full Git diff · click any line to comment",
                   ),
                 )
@@ -2372,7 +2429,7 @@ export default class GitReviewView extends View {
                       .hover((s) => s.text_color(p.mauve))
                       .on_mouse_down("left", stop)
                       .on_click((_e, cx) => this.toggleForceFullDiff(diffKey, file.path, cx))
-                      .child(forceFull ? "Show Slice Hunk" : "Show Full File Diff"),
+                      .child(forceFull ? "Show Topic Hunk" : "Show Full File Diff"),
                   ),
                 ),
             )
@@ -2386,7 +2443,7 @@ export default class GitReviewView extends View {
               d.child(
                 this.renderInteractiveDiffBlock({
                   diffKey,
-                  sliceId,
+                  topicId,
                   filePath: file.path,
                   rows,
                   threads: item.threads,
@@ -2400,10 +2457,10 @@ export default class GitReviewView extends View {
       });
   }
 
-  renderSliceGroupCard(group, sliceIndex, p, mono, nowMs) {
-    const isExpanded = this.expandedSlices.has(group.id);
+  renderTopicGroupCard(group, topicIndex, p, mono, nowMs) {
+    const isExpanded = this.expandedTopics.has(group.id);
     const stop = (_e, cx) => cx.stop_propagation();
-    const sliceCommentKey = `slice-cmt::${group.id}`;
+    const topicCommentKey = `topic-cmt::${group.id}`;
 
     const checkIcon = group.staged
       ? "check-square"
@@ -2413,7 +2470,7 @@ export default class GitReviewView extends View {
     const checkColor = group.staged ? p.green : group.partiallyStaged ? p.yellow : p.dim;
 
     return v_flex()
-      .id(`slice-card-${group.id}`)
+      .id(`topic-card-${group.id}`)
       .w_full()
       .rounded(6)
       .border_1()
@@ -2425,10 +2482,9 @@ export default class GitReviewView extends View {
           : p.border,
       )
       .bg(isExpanded ? withAlpha(p.mantle, "ee") : withAlpha(p.mantle, "88"))
-      // Slice Header Row
       .child(
         h_flex()
-          .id(`slice-hdr-${group.id}`)
+          .id(`topic-hdr-${group.id}`)
           .min_h(30)
           .px(7)
           .py(4)
@@ -2437,7 +2493,7 @@ export default class GitReviewView extends View {
           .justify_between()
           .cursor_pointer()
           .hover((s) => s.bg(p.hover))
-          .on_click((_e, cx) => this.toggleSliceExpand(group.id, cx))
+          .on_click((_e, cx) => this.toggleTopicExpand(group.id, cx))
           .child(
             h_flex()
               .flex_1()
@@ -2451,7 +2507,7 @@ export default class GitReviewView extends View {
               )
               .child(
                 div()
-                  .id(`schk-${group.id}`)
+                  .id(`tchk-${group.id}`)
                   .size(18)
                   .flex_none()
                   .flex()
@@ -2463,7 +2519,7 @@ export default class GitReviewView extends View {
                   .on_mouse_down("left", stop)
                   .on_click((_e, cx) => {
                     cx.stop_propagation();
-                    this.toggleStageSlice(group, cx);
+                    this.toggleStageTopic(group, cx);
                   })
                   .child(icon(checkIcon, 13)),
               )
@@ -2480,7 +2536,7 @@ export default class GitReviewView extends View {
                   .font_semibold()
                   .text_size(9.5)
                   .text_color(group.isUnattributed ? p.dim : p.mauve)
-                  .child(group.isUnattributed ? "Unattributed" : `Slice ${sliceIndex + 1}`),
+                  .child(group.isUnattributed ? "Unattributed" : `Topic ${topicIndex + 1}`),
               )
               .child(
                 div()
@@ -2533,7 +2589,7 @@ export default class GitReviewView extends View {
               )
               .child(
                 div()
-                  .id(`scmt-btn-${group.id}`)
+                  .id(`tcmt-btn-${group.id}`)
                   .size(18)
                   .flex()
                   .items_center()
@@ -2545,15 +2601,15 @@ export default class GitReviewView extends View {
                   .on_mouse_down("left", stop)
                   .on_click((_e, cx) => {
                     cx.stop_propagation();
-                    this.expandedSlices.add(group.id);
-                    this.openComposer({ key: sliceCommentKey, sliceId: group.id }, cx);
+                    this.expandedTopics.add(group.id);
+                    this.openComposer({ key: topicCommentKey, topicId: group.id }, cx);
                   })
                   .child(icon("message-square", 10)),
               )
               .when(!group.isUnattributed, (el) =>
                 el.child(
                   div()
-                    .id(`sdel-btn-${group.id}`)
+                    .id(`tdel-btn-${group.id}`)
                     .size(18)
                     .flex()
                     .items_center()
@@ -2565,14 +2621,13 @@ export default class GitReviewView extends View {
                     .on_mouse_down("left", stop)
                     .on_click((_e, cx) => {
                       cx.stop_propagation();
-                      this.deleteSlice(group.id, cx);
+                      this.deleteTopic(group.id, cx);
                     })
                     .child(icon("x", 10)),
                 ),
               ),
           ),
       )
-      // Expanded Slice Body
       .when(isExpanded, (el) =>
         el.child(
           h_flex()
@@ -2646,24 +2701,24 @@ export default class GitReviewView extends View {
                           .hover((s) => s.bg(withAlpha(p.mauve, "33")))
                           .on_mouse_down("left", stop)
                           .on_click(() =>
-                            this.openAddSliceModal(group.items.map((it) => it.filePath)),
+                            this.openAddTopicModal(group.items.map((it) => it.filePath)),
                           )
                           .child(icon("plus", 9))
-                          .child("Group into Slice"),
+                          .child("Group into Topic"),
                       ),
                   ),
                 )
-                .when(this.composerTarget?.key === sliceCommentKey, (c) =>
-                  c.child(this.renderInlineComposer(sliceCommentKey, p, mono)),
+                .when(this.composerTarget?.key === topicCommentKey, (c) =>
+                  c.child(this.renderInlineComposer(topicCommentKey, p, mono)),
                 )
                 .children(
-                  group.sliceThreads
-                    .map((t) => this.renderThreadCard(t, `sl-${group.id}`, p, mono, nowMs))
+                  group.topicThreads
+                    .map((t) => this.renderThreadCard(t, `tp-${group.id}`, p, mono, nowMs))
                     .filter(Boolean),
                 )
                 .children(
                   group.items.map((item) =>
-                    this.renderFileItemRow({ sliceId: group.id, item, p, mono, nowMs }),
+                    this.renderFileItemRow({ topicId: group.id, item, p, mono, nowMs }),
                   ),
                 ),
             ),
@@ -2672,14 +2727,14 @@ export default class GitReviewView extends View {
   }
 
   renderByFileRow(file, p, mono, nowMs) {
-    const fileSlices = this.reviewDoc.slices.filter((s) =>
-      s.files.some((sf) => sf.filePath === file.path),
+    const fileTopics = this.reviewDoc.topics.filter((t) =>
+      t.files.some((tf) => tf.filePath === file.path),
     );
     const fileThreads = this.reviewDoc.threads.filter((t) => t.filePath === file.path);
-    const summaryText = fileSlices.map((s) => s.title).join(" · ");
+    const summaryText = fileTopics.map((t) => t.title).join(" · ");
 
     return this.renderFileItemRow({
-      sliceId: "file",
+      topicId: "file",
       item: {
         filePath: file.path,
         gitFile: file,
@@ -2803,97 +2858,6 @@ export default class GitReviewView extends View {
       );
   }
 
-  renderOverviewCard(counts, p, mono, nowMs) {
-    const info = deriveOverviewInfo({
-      files: this.files,
-      slices: this.reviewDoc.slices,
-      overview: this.reviewDoc.overview,
-    });
-    if (!info) return null;
-
-    const relTime = info.updatedAt ? formatRelativeTime(info.updatedAt, nowMs) : "";
-
-    return v_flex()
-      .flex_none()
-      .px(8)
-      .py(6)
-      .gap(4)
-      .bg(withAlpha(p.surface0, "4d"))
-      .border_b(1)
-      .border_color(p.border)
-      .child(
-        h_flex()
-          .id("overview-toggle")
-          .items_center()
-          .justify_between()
-          .gap(6)
-          .cursor_pointer()
-          .on_click((_e, cx) => {
-            this.overviewExpanded = !this.overviewExpanded;
-            cx.notify();
-          })
-          .child(
-            h_flex()
-              .gap(5)
-              .items_center()
-              .font_family(mono)
-              .text_size(10)
-              .child(
-                icon(this.overviewExpanded ? "chevron-down" : "chevron-right", 11).text_color(p.dim),
-              )
-              .child(icon("sparkles", 11).text_color(p.mauve))
-              .child(div().font_bold().text_color(p.text).child("Overall Summary"))
-              .child(div().text_color(p.dim).child("•"))
-              .child(
-                div()
-                  .text_color(p.subtext)
-                  .child(`${this.files.length}f`),
-              )
-              .when(counts.slices > 0, (el) =>
-                el.child(
-                  div()
-                    .text_color(p.subtext)
-                    .child(`· ${counts.slices} slice${counts.slices === 1 ? "" : "s"}`),
-                ),
-              )
-              .child(
-                h_flex()
-                  .gap(1)
-                  .child(div().text_color(p.green).child(`+${info.additions}`))
-                  .child(div().text_color(p.dim).child("/"))
-                  .child(div().text_color(p.red).child(`-${info.deletions}`)),
-              ),
-          )
-          .child(
-            h_flex()
-              .gap(4)
-              .items_center()
-              .font_family(mono)
-              .text_size(9.5)
-              .text_color(p.dim)
-              .when(Boolean(info.agentName), (el) =>
-                el.child(div().text_color(p.mauve).font_semibold().child(info.agentName)),
-              )
-              .when(Boolean(relTime), (el) =>
-                el.child(div().child("•")).child(div().child(relTime)),
-              ),
-          ),
-      )
-      .when(this.overviewExpanded, (el) =>
-        el.child(
-          div()
-            .id("overview-body")
-            .max_h(88)
-            .pl(16)
-            .pr(4)
-            .overflow_y_scrollbar()
-            .text_size(11.5)
-            .text_color(info.synthesized ? p.subtext : p.text)
-            .child(info.text),
-        ),
-      );
-  }
-
   renderPane(cx) {
     const loc = this.currentLocation();
     if (!checking()) {
@@ -2903,7 +2867,7 @@ export default class GitReviewView extends View {
       const bump = shared(SHARED_BUMP_KEY);
       if (bump?.at && bump.at !== this.lastSeenBump) {
         this.lastSeenBump = bump.at;
-        if (bump.expandSliceId) this.expandedSlices.add(bump.expandSliceId);
+        if (bump.expandTopicId) this.expandedTopics.add(bump.expandTopicId);
         this.refresh(cx);
       }
     }
@@ -2913,24 +2877,26 @@ export default class GitReviewView extends View {
     const stop = (_e, cx) => cx.stop_propagation();
     const nowMs = Date.now();
 
-    const sliceGroups = buildSliceGroups(
+    const topicGroups = buildTopicGroups(
       this.files,
-      this.reviewDoc.slices,
+      this.reviewDoc.topics,
       this.reviewDoc.threads,
       { filter: this.filter, query: this.query },
     );
     const visibleFiles = filterFilesForReview(
       this.files,
-      this.reviewDoc.slices,
+      this.reviewDoc.topics,
       this.reviewDoc.threads,
       { filter: this.filter, query: this.query },
     );
     const counts = computeFooterCounts(
       this.files,
-      this.reviewDoc.slices,
+      this.reviewDoc.topics,
       this.reviewDoc.threads,
     );
     const allStaged = this.files.length > 0 && this.files.every((f) => f.staged);
+    const hasDirtyFiles = this.files.length > 0;
+    const hasStaged = counts.staged > 0;
 
     const headerIconBtn = (id, svgName, activeColor, action, spinning = false) =>
       div()
@@ -2989,8 +2955,6 @@ export default class GitReviewView extends View {
 
     const overviewCard = this.renderOverviewCard(counts, p, mono, nowMs);
     const dispatchBar = this.renderReviewDispatchBar(counts, loc.spaceId, p, mono);
-    const hasDirtyFiles = this.files.length > 0;
-    const hasStaged = counts.staged > 0;
 
     return v_flex()
       .id("git-review-pane")
@@ -3025,7 +2989,7 @@ export default class GitReviewView extends View {
           cx.stop_propagation();
         }
       })
-      // 1. PANE HEADER: Title + [Slices | Files] Toggle + Branch + Quick Actions
+      // 1. PANE HEADER: [Topics | Files] Toggle + Branch + Quick Actions
       .child(
         h_flex()
           .h(36)
@@ -3056,7 +3020,7 @@ export default class GitReviewView extends View {
                   .border_1()
                   .border_color(p.border)
                   .text_size(10)
-                  .child(modePill("SLICE", "Slices", "layers"))
+                  .child(modePill("TOPIC", "Topics", "layers"))
                   .child(modePill("FILE", "Files", "file-text")),
               )
               .when(Boolean(this.branch), (el) =>
@@ -3085,7 +3049,7 @@ export default class GitReviewView extends View {
               .items_center()
               .child(
                 h_flex()
-                  .id("hdr-add-slice")
+                  .id("hdr-add-topic")
                   .h(22)
                   .px(6)
                   .gap(3)
@@ -3100,9 +3064,9 @@ export default class GitReviewView extends View {
                   .cursor_pointer()
                   .hover((s) => s.bg(withAlpha(p.mauve, "38")))
                   .on_mouse_down("left", stop)
-                  .on_click(() => this.openAddSliceModal())
+                  .on_click(() => this.openAddTopicModal())
                   .child(icon("plus", 10))
-                  .child("Slice"),
+                  .child("Topic"),
               )
               .child(
                 h_flex()
@@ -3145,7 +3109,7 @@ export default class GitReviewView extends View {
               )
               .child(
                 headerIconBtn("hdr-expand-all", "chevrons-up-down", null, (_e, cx) =>
-                  this.toggleExpandAll(sliceGroups, visibleFiles, cx),
+                  this.toggleExpandAll(topicGroups, visibleFiles, cx),
                 ),
               )
               .child(
@@ -3235,7 +3199,12 @@ export default class GitReviewView extends View {
               .child(filterPill("ALL", "All"))
               .child(filterPill("STAGED", "Staged"))
               .child(filterPill("UNSTAGED", "Unstaged"))
-              .child(filterPill("OPEN", `Open${counts.draft + counts.open + counts.addressed > 0 ? ` (${counts.draft + counts.open + counts.addressed})` : ""}`)),
+              .child(
+                filterPill(
+                  "OPEN",
+                  `Open${counts.draft + counts.open + counts.addressed > 0 ? ` (${counts.draft + counts.open + counts.addressed})` : ""}`,
+                ),
+              ),
           ),
       )
       // Action Error Banner
@@ -3266,7 +3235,7 @@ export default class GitReviewView extends View {
             ),
         ),
       )
-      // 3. SCROLLABLE INLINE SLICE ACCORDION / BY-FILE LIST
+      // 3. SCROLLABLE INLINE TOPIC ACCORDION / BY-FILE LIST
       .child(
         div()
           .flex_1()
@@ -3282,10 +3251,10 @@ export default class GitReviewView extends View {
               .overflow_y_scroll()
               .p(6)
               .gap(5)
-              .when(this.viewMode === "SLICE", (el) =>
+              .when(this.viewMode === "TOPIC", (el) =>
                 el.children(
-                  sliceGroups.map((group, idx) =>
-                    this.renderSliceGroupCard(group, idx, p, mono, nowMs),
+                  topicGroups.map((group, idx) =>
+                    this.renderTopicGroupCard(group, idx, p, mono, nowMs),
                   ),
                 ),
               )
@@ -3293,7 +3262,7 @@ export default class GitReviewView extends View {
                 el.children(visibleFiles.map((f) => this.renderByFileRow(f, p, mono, nowMs))),
               )
               .when(
-                (this.viewMode === "SLICE" && sliceGroups.length === 0) ||
+                (this.viewMode === "TOPIC" && topicGroups.length === 0) ||
                   (this.viewMode === "FILE" && visibleFiles.length === 0),
                 (el) =>
                   el.child(
@@ -3378,8 +3347,8 @@ export default class GitReviewView extends View {
               .child(
                 h_flex()
                   .gap(3)
-                  .child("Slices:")
-                  .child(div().font_bold().text_color(p.mauve).child(String(counts.slices))),
+                  .child("Topics:")
+                  .child(div().font_bold().text_color(p.mauve).child(String(counts.topics))),
               ),
           ),
       );
@@ -3387,7 +3356,7 @@ export default class GitReviewView extends View {
 
   render(cx) {
     if (this.role === "runner") return div();
-    if (this.role === "add-slice") return this.renderAddSliceDialog();
+    if (this.role === "add-topic") return this.renderAddTopicDialog();
     if (this.role === "commit") return this.renderCommitDialog();
     return this.renderPane(cx);
   }
