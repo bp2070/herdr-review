@@ -1832,7 +1832,7 @@ export default class GitReviewView extends View {
                 icon(this.overviewExpanded ? "chevron-down" : "chevron-right", 11).text_color(p.dim),
               )
               .child(icon("sparkles", 11).text_color(p.mauve))
-              .child(div().font_bold().text_color(p.text).child("Overall Summary"))
+              .child(div().font_bold().text_color(p.text).child("Summary"))
               .child(div().text_color(p.dim).child("•"))
               .child(div().text_color(p.subtext).child(`${this.files.length}f`))
               .when(counts.topics > 0, (el) =>
@@ -3131,7 +3131,7 @@ export default class GitReviewView extends View {
               ),
           ),
       )
-      // 1b. OVERALL SUMMARY CARD AT TOP
+      // 1b. SUMMARY CARD AT TOP
       .when(Boolean(overviewCard), (el) => el.child(overviewCard))
       // 2. FILTER & SEARCH BAR
       .child(

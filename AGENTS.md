@@ -2,7 +2,7 @@
 
 ## Project
 
-This repository packages **Herdr Git Review** (`git-status`): a movable native GPUI workspace pane and companion Pi package for pre-commit code review—featuring a collapsible top **Overall Summary**, grouping changes into logical multi-file **Change Topics**, hosting inline back-and-forth **Review Threads** dispatched to live agents via `hc send`, and committing through an on-demand **Commit Changes** dialog.
+This repository packages **Herdr Git Review** (`git-status`): a movable native GPUI workspace pane and companion Pi package for pre-commit code review—featuring a collapsible top **Summary**, grouping changes into logical multi-file **Change Topics**, hosting inline back-and-forth **Review Threads** dispatched to live agents via `hc send`, and committing through an on-demand **Commit Changes** dialog.
 
 Installed into Herdr & Pi via:
 - Directory junction: `~/.config/herdr-app/mods/git-status -> <repository>/mods/git-status`
@@ -11,7 +11,7 @@ Installed into Herdr & Pi via:
 
 ## Repository layout
 
-- `mods/git-status/main.js` — Native GPUI workspace review pane (collapsible top **Overall Summary**, Inline Topic Accordion + By-File view, interactive line/file/topic comment composer, `hc send` + clipboard review dispatch, **Commit Changes** modal dialog, and **Create Change Topic** modal).
+- `mods/git-status/main.js` — Native GPUI workspace review pane (collapsible top **Summary**, Inline Topic Accordion + By-File view, interactive line/file/topic comment composer, `hc send` + clipboard review dispatch, **Commit Changes** modal dialog, and **Create Change Topic** modal).
 - `mods/git-status/model.js` — Pure Git status/numstat/diff parsers, `ReviewDocument` (`Overview`, `ChangeTopic`, `ReviewThread`, `SuggestedCommit`), `Unattributed` trust-bucket builder, commit derivation, and Catppuccin Mocha palette helpers. Keep free of GPUI, Herdr, and Node imports.
 - `mods/git-status/mod.json` — Mod registration (`place: "none"`, `focusable: true`, popup toggle runner).
 - `mods/git-status/*.svg` — Self-contained vector icons tinted by GPUI.

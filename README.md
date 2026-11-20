@@ -1,7 +1,7 @@
 # Herdr Git Review (`git-status`)
 
 A movable, splittable native GPUI workspace pane and Pi package for **pre-commit code review** in Herdr:
-- **Overall Summary + Logical Change Topics**: Displays a collapsible **Overall Summary** card at the top, followed by multi-file **Change Topics** grouped by intent (with an automatic **Unattributed / Manual Changes** bucket guaranteeing 100% of `git status` is always visible).
+- **Summary + Logical Change Topics**: Displays a collapsible **Summary** card at the top, followed by multi-file **Change Topics** grouped by intent (with an automatic **Unattributed / Manual Changes** bucket guaranteeing 100% of `git status` is always visible).
 - **Interactive Review Comments (`hc send` + Clipboard)**: Click any diff line, file, or topic to queue **Draft** review comments, then click **`Submit Review → pi (N)`** to dispatch them straight into the space's live agent terminal (with multi-turn `Draft → Open → Addressed → Resolved` threads).
 - **On-Demand Commit Dialog**: Clicking **`Commit…`** (or pressing `c` when the pane is focused) opens a dedicated **Commit Changes** dialog pre-filled with `suggestedCommit` (`subject` + `body`), an interactive `Staged only` vs `All files` scope switch, and a non-blocking warning badge if unresolved comments exist.
 

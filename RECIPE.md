@@ -1,13 +1,13 @@
 # Git Review
 
-A movable Herdr workspace pane (`mods/git-status`) for reviewing uncommitted changes with a top **Overall Summary**, logical multi-file **Change Topics**, back-and-forth inline review threads with live coding agents, and an on-demand **Commit Changes** dialog.
+A movable Herdr workspace pane (`mods/git-status`) for reviewing uncommitted changes with a top **Summary**, logical multi-file **Change Topics**, back-and-forth inline review threads with live coding agents, and an on-demand **Commit Changes** dialog.
 
 ## What you see
 
 Top to bottom inside a 1px-bordered Catppuccin Mocha / theme-aware pane:
 
 1. **Header (36px)**: mauve compare-arrows icon, **`Topics | Files`** mode switch, teal git-branch badge, mauve **`+ Topic`** button, **`Commit…`** dialog launcher (showing staged count when staged > 0 and an amber warning icon when unresolved comments exist), expand/collapse-all, stage/unstage-all, and spinning refresh.
-2. **Overall Summary Card**: collapsible top card showing sparkles icon, total file/topic/diff stats, agent timestamp, and a concise high-level summary of the entire changeset (synthesizing from active topics if not explicitly set).
+2. **Summary Card**: collapsible top card showing sparkles icon, total file/topic/diff stats, agent timestamp, and a concise high-level summary of the entire changeset (synthesizing from active topics if not explicitly set).
 3. **Search & Filter Bar (36px)**: monospace search input (`Filter topic, file, comment...`) and 4-way filter pills (`All`, `Staged`, `Unstaged`, `Open`).
 4. **Inline Topic Accordion**:
    - **Topic Card**: expand chevron, topic-level stage checkbox (green check / yellow minus / dim square), `Topic N` badge (or `Unattributed` for unclaimed edits), bold headline, active comment badge, file count (`3f`), `+add/-del`, topic comment button, and delete `×`.
