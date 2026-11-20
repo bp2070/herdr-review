@@ -1,0 +1,905 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Herdr GUI - Movable Git Changes & Agent Notes Mod</title>
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  
+  <!-- Tailwind Configuration for Catppuccin Mocha Palette -->
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            mocha: {
+              base: '#1e1e2e',
+              mantle: '#181825',
+              crust: '#11111b',
+              surface0: '#313244',
+              surface1: '#45475a',
+              surface2: '#585b70',
+              overlay0: '#6c7086',
+              text: '#cdd6f4',
+              subtext0: '#a6adc8',
+              subtext1: '#bac2de',
+              green: '#a6e3a1',
+              yellow: '#f9e2af',
+              red: '#f38ba8',
+              blue: '#89b4fa',
+              mauve: '#cba6f7',
+              peach: '#fab387',
+              teal: '#94e2d5',
+              sky: '#89dceb'
+            }
+          },
+          fontFamily: {
+            sans: ['Inter', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', 'Roboto', 'sans-serif'],
+            mono: ['JetBrains Mono', 'Fira Code', 'Menlo', 'Monaco', 'Consolas', 'monospace']
+          }
+        }
+      }
+    }
+  </script>
+
+  <style>
+    /* Custom Scrollbars */
+    ::-webkit-scrollbar {
+      width: 5px;
+      height: 5px;
+    }
+    ::-webkit-scrollbar-track {
+      background: #181825;
+    }
+    ::-webkit-scrollbar-thumb {
+      background: #313244;
+      border-radius: 3px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: #45475a;
+    }
+
+    /* Vertical Tree Line for Nested Notes */
+    .tree-guide-line {
+      position: absolute;
+      left: 1.15rem;
+      top: 0.5rem;
+      bottom: 0.5rem;
+      width: 1px;
+      background-color: #313244;
+    }
+
+    /* Resizable Handle for Floating Window */
+    .resize-handle {
+      position: absolute;
+      right: 0;
+      bottom: 0;
+      width: 12px;
+      height: 12px;
+      cursor: se-resize;
+    }
+
+    /* Drag Handle Cursor */
+    .drag-handle {
+      cursor: grab;
+    }
+    .drag-handle:active {
+      cursor: grabbing;
+    }
+  </style>
+</head>
+<body class="bg-mocha-crust text-mocha-text font-sans antialiased h-screen flex flex-col overflow-hidden select-none">
+
+  <!-- TOP WORKSPACE HEADER & LAYOUT CONTROLS -->
+  <header class="bg-mocha-mantle border-b border-mocha-surface0 h-11 px-3 flex items-center justify-between shrink-0 font-mono text-xs">
+    <div class="flex items-center space-x-3">
+      <div class="flex items-center space-x-2 text-mocha-mauve font-bold">
+        <i data-lucide="terminal" class="w-4 h-4"></i>
+        <span class="tracking-wide">HERDR WORKSPACE</span>
+      </div>
+      <span class="text-mocha-surface2">|</span>
+      <span class="text-mocha-subtext0 text-[11px] flex items-center">
+        <i data-lucide="folder-git-2" class="w-3.5 h-3.5 mr-1 text-mocha-teal"></i>
+        main-space / service-outbox
+      </span>
+      <span class="bg-mocha-surface0 text-mocha-green px-1.5 py-0.5 rounded text-[10px]">main-branch</span>
+    </div>
+
+    <!-- PANE LAYOUT SWITCHER CONTROLS -->
+    <div class="flex items-center space-x-1.5 bg-mocha-surface0/60 p-1 rounded-lg border border-mocha-surface1/60">
+      <span class="text-[10px] text-mocha-subtext0 uppercase px-1 font-sans font-semibold">Pane Layout:</span>
+      <button onclick="setLayout('dock-right')" id="btn-dock-right" class="px-2 py-1 rounded text-[11px] flex items-center space-x-1 bg-mocha-mauve text-mocha-crust font-semibold transition">
+        <i data-lucide="panel-right" class="w-3.5 h-3.5"></i>
+        <span>Right</span>
+      </button>
+      <button onclick="setLayout('dock-left')" id="btn-dock-left" class="px-2 py-1 rounded text-[11px] flex items-center space-x-1 text-mocha-subtext0 hover:text-mocha-text transition">
+        <i data-lucide="panel-left" class="w-3.5 h-3.5"></i>
+        <span>Left</span>
+      </button>
+      <button onclick="setLayout('dock-bottom')" id="btn-dock-bottom" class="px-2 py-1 rounded text-[11px] flex items-center space-x-1 text-mocha-subtext0 hover:text-mocha-text transition">
+        <i data-lucide="panel-bottom" class="w-3.5 h-3.5"></i>
+        <span>Bottom</span>
+      </button>
+      <button onclick="setLayout('float')" id="btn-float" class="px-2 py-1 rounded text-[11px] flex items-center space-x-1 text-mocha-subtext0 hover:text-mocha-text transition">
+        <i data-lucide="move" class="w-3.5 h-3.5"></i>
+        <span>Floating / Free</span>
+      </button>
+    </div>
+
+    <!-- Right Workspace Info -->
+    <div class="flex items-center space-x-2 text-[11px] text-mocha-subtext0">
+      <button onclick="openAddNoteModal()" class="px-2 py-1 bg-mocha-mauve/20 hover:bg-mocha-mauve/30 text-mocha-mauve border border-mocha-mauve/40 rounded flex items-center space-x-1 transition font-sans font-medium">
+        <i data-lucide="plus-circle" class="w-3.5 h-3.5"></i>
+        <span>Add Agent Note</span>
+      </button>
+    </div>
+  </header>
+
+  <!-- MAIN WORKSPACE CONTAINER -->
+  <main id="workspace-container" class="flex-1 relative flex overflow-hidden bg-mocha-base">
+
+    <!-- SIMULATED EDITOR PANE -->
+    <div id="pane-editor" class="flex-1 flex flex-col bg-mocha-base border-r border-mocha-surface0 min-w-0">
+      <!-- Editor Tab Bar -->
+      <div class="bg-mocha-mantle h-8 border-b border-mocha-surface0 flex items-center px-2 space-x-1 text-xs font-mono">
+        <div class="bg-mocha-base text-mocha-text border-t-2 border-mocha-mauve px-3 py-1 flex items-center space-x-2 text-[11px]">
+          <i data-lucide="file-code-2" class="w-3.5 h-3.5 text-mocha-blue"></i>
+          <span>src/outbox/poller.ts</span>
+          <span class="text-mocha-subtext0 hover:text-mocha-text cursor-pointer">×</span>
+        </div>
+        <div class="text-mocha-subtext0 px-3 py-1 flex items-center space-x-2 text-[11px] hover:bg-mocha-surface0/30 cursor-pointer">
+          <i data-lucide="file-code" class="w-3.5 h-3.5 text-mocha-yellow"></i>
+          <span>src/db/schema.ts</span>
+        </div>
+      </div>
+      <!-- Code Editor Mockup Content -->
+      <div class="flex-1 p-4 overflow-auto font-mono text-xs leading-relaxed text-mocha-subtext1">
+        <div class="text-mocha-overlay0">// Workspace active editor view</div>
+        <div><span class="text-mocha-mauve">import</span> { OutboxEvent, RetryPolicy } <span class="text-mocha-mauve">from</span> <span class="text-mocha-green">'./types'</span>;</div>
+        <div><span class="text-mocha-mauve">import</span> { logger } <span class="text-mocha-mauve">from</span> <span class="text-mocha-green">'../utils/logger'</span>;</div>
+        <br>
+        <div><span class="text-mocha-mauve">export class</span> <span class="text-mocha-yellow">OutboxPoller</span> {</div>
+        <div>&nbsp;&nbsp;<span class="text-mocha-mauve">private</span> retryPolicy: RetryPolicy;</div>
+        <br>
+        <div>&nbsp;&nbsp;<span class="text-mocha-blue">constructor</span>() {</div>
+        <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="text-mocha-red">this</span>.retryPolicy = <span class="text-mocha-mauve">new</span> RetryPolicy({ maxAttempts: <span class="text-mocha-peach">5</span>, backoffMs: <span class="text-mocha-peach">200</span> });</div>
+        <div>&nbsp;&nbsp;}</div>
+        <br>
+        <div class="bg-mocha-green/10 border-l-2 border-mocha-green pl-2 text-mocha-text py-0.5">
+          <span class="text-mocha-overlay0">// Agent Edit (L24): Added jittered backoff logic to prevent polling thundering herd</span>
+        </div>
+        <div>&nbsp;&nbsp;<span class="text-mocha-mauve">async</span> <span class="text-mocha-blue">pollBatch</span>(batchSize = <span class="text-mocha-peach">50</span>) {</div>
+        <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="text-mocha-mauve">const</span> backoff = <span class="text-mocha-red">this</span>.retryPolicy.calculateJitter();</div>
+        <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="text-mocha-mauve">await</span> sleep(backoff);</div>
+        <div>&nbsp;&nbsp;&nbsp;&nbsp;<span class="text-mocha-mauve">return await</span> db.outbox.findMany({ take: batchSize });</div>
+        <div>&nbsp;&nbsp;}</div>
+        <div>}</div>
+      </div>
+
+      <!-- SIMULATED BOTTOM TERMINAL / AGENT PROMPT PANE -->
+      <div class="h-40 border-t border-mocha-surface0 bg-mocha-mantle p-2 flex flex-col font-mono text-xs">
+        <div class="flex items-center justify-between pb-1 text-[11px] text-mocha-subtext0 border-b border-mocha-surface0">
+          <span class="flex items-center space-x-1.5">
+            <i data-lucide="terminal" class="w-3 h-3 text-mocha-green"></i>
+            <span>Agent CLI Terminal</span>
+          </span>
+          <span class="text-[10px] text-mocha-teal">Agent status: IDLE</span>
+        </div>
+        <div class="flex-1 overflow-y-auto p-1 text-[11px] space-y-1 text-mocha-subtext1">
+          <div class="text-mocha-overlay0">[10:42:01] agent: completed task "outbox exponential backoff retry"</div>
+          <div class="text-mocha-overlay0">[10:42:02] git: recorded 3 agent notes across 2 modified files</div>
+          <div class="text-mocha-green font-bold flex items-center space-x-1">
+            <span>herdr-agent&gt;</span>
+            <span class="animate-pulse w-2 h-3 bg-mocha-mauve inline-block"></span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+
+    <!-- ========================================================================= -->
+    <!-- GIT CHANGES & AGENT NOTES REGULAR PANE (MOVABLE / DOCKABLE / FLOATING) -->
+    <!-- ========================================================================= -->
+    <div id="git-changes-pane" 
+         class="w-96 bg-mocha-mantle border-l border-mocha-surface0 flex flex-col h-full z-20 transition-all duration-150 shadow-xl">
+      
+      <!-- PANE HEADER / DRAG BAR -->
+      <div id="pane-drag-header" class="h-9 px-2.5 bg-mocha-surface0/40 border-b border-mocha-surface0 flex items-center justify-between font-mono shrink-0 select-none">
+        <div class="flex items-center space-x-2 truncate">
+          <i data-lucide="grip-vertical" id="drag-icon" class="w-3.5 h-3.5 text-mocha-overlay0 hidden"></i>
+          <i data-lucide="git-compare-arrows" class="w-4 h-4 text-mocha-mauve"></i>
+          <span class="text-xs font-bold text-mocha-text tracking-tight">Git Changes &amp; Notes</span>
+          <span id="pane-file-count-badge" class="text-[10px] bg-mocha-surface1 text-mocha-mauve font-semibold px-1.5 py-0.2 rounded-full">
+            5
+          </span>
+        </div>
+
+        <!-- Header Quick Actions -->
+        <div class="flex items-center space-x-1 text-mocha-subtext0">
+          <button onclick="toggleExpandAll()" title="Toggle Expand/Collapse All" class="p-1 hover:bg-mocha-surface1 text-mocha-subtext0 hover:text-mocha-text rounded transition">
+            <i data-lucide="chevrons-up-down" class="w-3.5 h-3.5"></i>
+          </button>
+          <button onclick="toggleStageAll()" id="btn-stage-all" title="Toggle Stage All Files" class="p-1 hover:bg-mocha-surface1 text-mocha-subtext0 hover:text-mocha-green rounded transition">
+            <i data-lucide="check-check" class="w-3.5 h-3.5"></i>
+          </button>
+        </div>
+      </div>
+
+      <!-- FILTER & SEARCH BAR (ULTRA COMPACT) -->
+      <div class="px-2 py-1.5 border-b border-mocha-surface0 bg-mocha-mantle flex items-center space-x-2 text-xs">
+        <div class="relative flex-1">
+          <i data-lucide="search" class="w-3 h-3 absolute left-2 top-2 text-mocha-overlay0"></i>
+          <input type="text" id="pane-search-input" oninput="onSearchInput(this.value)" placeholder="Filter file or note..."
+                 class="w-full bg-mocha-surface0 text-mocha-text pl-7 pr-2 py-0.5 rounded text-[11px] font-mono border border-mocha-surface1/60 focus:outline-none focus:border-mocha-mauve placeholder:text-mocha-overlay0">
+        </div>
+
+        <div class="flex items-center bg-mocha-surface0/60 p-0.5 rounded border border-mocha-surface1/50 text-[10px] font-mono">
+          <button onclick="setFilter('ALL')" id="filter-btn-ALL" class="px-1.5 py-0.5 rounded bg-mocha-surface1 text-mocha-text font-bold">All</button>
+          <button onclick="setFilter('STAGED')" id="filter-btn-STAGED" class="px-1.5 py-0.5 rounded text-mocha-subtext0 hover:text-mocha-text">Staged</button>
+          <button onclick="setFilter('UNSTAGED')" id="filter-btn-UNSTAGED" class="px-1.5 py-0.5 rounded text-mocha-subtext0 hover:text-mocha-text">Unstaged</button>
+        </div>
+      </div>
+
+      <!-- COMPACT FILE TREE LIST WITH NESTED MINIMALIST AGENT NOTES -->
+      <div id="file-list-container" class="flex-1 overflow-y-auto p-1 space-y-0.5 font-mono text-xs">
+        <!-- Dynamically rendered compact file rows and nested minimal agent notes -->
+      </div>
+
+      <!-- PANE FOOTER STATUS -->
+      <div class="h-6 px-2.5 bg-mocha-crust/80 border-t border-mocha-surface0 flex items-center justify-between text-[10px] font-mono text-mocha-subtext0 shrink-0">
+        <div class="flex items-center space-x-2">
+          <span>Staged: <strong id="footer-staged-count" class="text-mocha-green">0</strong></span>
+          <span>•</span>
+          <span>Unstaged: <strong id="footer-unstaged-count" class="text-mocha-yellow">0</strong></span>
+        </div>
+        <div>
+          <span>Notes: <strong id="footer-notes-count" class="text-mocha-mauve">0</strong></span>
+        </div>
+      </div>
+
+      <!-- Floating Resize Handle -->
+      <div id="resize-handle" class="resize-handle hidden"></div>
+    </div>
+
+  </main>
+
+
+  <!-- ========================================================================= -->
+  <!-- ADD AGENT NOTE MODAL -->
+  <!-- ========================================================================= -->
+  <div id="add-note-modal" class="fixed inset-0 bg-mocha-crust/80 backdrop-blur-sm z-50 flex items-center justify-center hidden">
+    <div class="bg-mocha-mantle border border-mocha-surface1 rounded-xl w-full max-w-md shadow-2xl overflow-hidden font-sans">
+      <div class="px-4 py-2.5 border-b border-mocha-surface0 flex items-center justify-between bg-mocha-surface0/40">
+        <div class="flex items-center space-x-2 font-mono text-xs font-bold text-mocha-text">
+          <i data-lucide="sparkles" class="w-4 h-4 text-mocha-mauve"></i>
+          <span>Add Discrete Agent Note</span>
+        </div>
+        <button onclick="closeAddNoteModal()" class="p-1 rounded hover:bg-mocha-surface1 text-mocha-subtext0">
+          <i data-lucide="x" class="w-4 h-4"></i>
+        </button>
+      </div>
+
+      <form onsubmit="handleNewNoteSubmit(event)" class="p-4 space-y-3 text-xs">
+        <div>
+          <label class="block font-mono text-mocha-subtext0 mb-1">Target File</label>
+          <select id="note-file-select" class="w-full bg-mocha-surface0 text-mocha-text border border-mocha-surface1 rounded px-2.5 py-1.5 font-mono focus:outline-none focus:border-mocha-mauve">
+            <!-- Dynamically populated -->
+          </select>
+        </div>
+
+        <div>
+          <label class="block font-mono text-mocha-subtext0 mb-1">Single-Line Change Description</label>
+          <input type="text" id="note-desc-input" placeholder="e.g. Added exponential backoff jitter in pollOutbox" required
+                 class="w-full bg-mocha-surface0 text-mocha-text border border-mocha-surface1 rounded px-2.5 py-1.5 focus:outline-none focus:border-mocha-mauve placeholder:text-mocha-surface2">
+        </div>
+
+        <div class="grid grid-cols-2 gap-2 font-mono">
+          <div>
+            <label class="block text-mocha-subtext0 mb-1">Agent Tag</label>
+            <input type="text" id="note-agent-input" value="pi" required
+                   class="w-full bg-mocha-surface0 text-mocha-text border border-mocha-surface1 rounded px-2.5 py-1 focus:outline-none focus:border-mocha-mauve">
+          </div>
+          <div>
+            <label class="block text-mocha-subtext0 mb-1">Line Range</label>
+            <input type="text" id="note-lines-input" placeholder="L24-L35"
+                   class="w-full bg-mocha-surface0 text-mocha-text border border-mocha-surface1 rounded px-2.5 py-1 focus:outline-none focus:border-mocha-mauve">
+          </div>
+        </div>
+
+        <div>
+          <label class="block font-mono text-mocha-subtext0 mb-1">Optional Code Snippet Diff (Shown when note is clicked)</label>
+          <textarea id="note-diff-input" rows="3" placeholder="+ const backoff = calculateJitter();&#10;- const backoff = 1000;"
+                    class="w-full bg-mocha-surface0 text-mocha-text border border-mocha-surface1 rounded px-2.5 py-1.5 font-mono text-[11px] focus:outline-none focus:border-mocha-mauve placeholder:text-mocha-surface2"></textarea>
+        </div>
+
+        <div class="flex items-center justify-end space-x-2 pt-2 border-t border-mocha-surface0">
+          <button type="button" onclick="closeAddNoteModal()" class="px-3 py-1 bg-mocha-surface0 text-mocha-subtext0 hover:text-mocha-text rounded">Cancel</button>
+          <button type="submit" class="px-3 py-1 bg-mocha-mauve text-mocha-crust font-semibold rounded">Save Note</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+
+  <!-- JAVASCRIPT APPLICATION LOGIC -->
+  <script>
+    // DATASET: Compact Files with Discrete Agent Notes & Optional Code Diffs
+    let filesData = [
+      {
+        id: 'f-1',
+        dir: 'src/outbox/',
+        name: 'poller.ts',
+        path: 'src/outbox/poller.ts',
+        status: 'M',
+        staged: false,
+        additions: 14,
+        deletions: 3,
+        agentNotes: [
+          {
+            id: 'n-101',
+            agent: 'pi',
+            time: '2m ago',
+            summary: 'Added transactional outbox retry jitter calculation in pollBatch',
+            lines: 'L24-L31',
+            diff: `+ const backoff = this.retryPolicy.calculateJitter();
++ await sleep(backoff);
+- const backoff = 200;`
+          },
+          {
+            id: 'n-102',
+            agent: 'pi',
+            time: '5m ago',
+            summary: 'Replaced manual mutex unlock with atomic compare-and-swap buffer state',
+            lines: 'L45-L52',
+            diff: `- await this.lock.release();
++ if (!this.atomicState.cas(0, 1)) return;`
+          }
+        ]
+      },
+      {
+        id: 'f-2',
+        dir: 'src/db/schema/',
+        name: 'permissions.ts',
+        path: 'src/db/schema/permissions.ts',
+        status: 'M',
+        staged: true,
+        additions: 28,
+        deletions: 5,
+        agentNotes: [
+          {
+            id: 'n-201',
+            agent: 'claude-3.7',
+            time: '12m ago',
+            summary: 'Enforced tenant_id foreign key cascade deletion constraint',
+            lines: 'L18-L22',
+            diff: `- tenant_id: text("tenant_id").notNull()
++ tenant_id: text("tenant_id").references(() => tenants.id, { onDelete: "cascade" })`
+          },
+          {
+            id: 'n-202',
+            agent: 'claude-3.7',
+            time: '14m ago',
+            summary: 'Added high-watermark sequence index to outbox event schema',
+            lines: 'L60-L68',
+            diff: `+ index("outbox_watermark_idx").on(table.watermark)`
+          }
+        ]
+      },
+      {
+        id: 'f-3',
+        dir: 'src/components/DataTable/',
+        name: 'EditableCell.tsx',
+        path: 'src/components/DataTable/EditableCell.tsx',
+        status: 'A',
+        staged: false,
+        additions: 45,
+        deletions: 0,
+        agentNotes: [
+          {
+            id: 'n-301',
+            agent: 'pi',
+            time: '18m ago',
+            summary: 'Created inline cell editor component with keyboard shortcut listeners',
+            lines: 'L1-L45',
+            diff: `+ export const EditableCell = ({ value, onSave }) => {
++   const [val, setVal] = useState(value);
++   return <input value={val} onChange={e => setVal(e.target.value)} />;
++ };`
+          }
+        ]
+      },
+      {
+        id: 'f-4',
+        dir: 'scripts/',
+        name: 'worktree-switch.ps1',
+        path: 'scripts/worktree-switch.ps1',
+        status: 'M',
+        staged: true,
+        additions: 8,
+        deletions: 2,
+        agentNotes: [
+          {
+            id: 'n-401',
+            agent: 'codex',
+            time: '25m ago',
+            summary: 'Fixed path normalization for Windows Git worktrees during auto-switch',
+            lines: 'L12-L16',
+            diff: `- $path = $rawPath.Replace("/", "\\")
++ $path = [System.IO.Path]::GetFullPath($rawPath)`
+          }
+        ]
+      },
+      {
+        id: 'f-5',
+        dir: './',
+        name: 'README.md',
+        path: 'README.md',
+        status: 'D',
+        staged: false,
+        additions: 0,
+        deletions: 12,
+        agentNotes: [
+          {
+            id: 'n-501',
+            agent: 'pi',
+            time: '30m ago',
+            summary: 'Removed deprecated setup instructions replaced by Herdr workspace CLI',
+            lines: 'L1-L12',
+            diff: `- ## Legacy Setup
+- Run npm install and copy config files manually.`
+          }
+        ]
+      }
+    ];
+
+    // STATE MANAGEMENT
+    let activeLayout = 'dock-right'; // 'dock-right', 'dock-left', 'dock-bottom', 'float'
+    let activeFilter = 'ALL'; // 'ALL', 'STAGED', 'UNSTAGED'
+    let searchQuery = '';
+    
+    // Tracking Expanded Items
+    let expandedFileIds = new Set(['f-1', 'f-2']); // Default expanded files
+    let expandedNoteIds = new Set(); // Expanded inline diffs for specific notes
+
+    // Initialize Page
+    window.onload = function() {
+      lucide.createIcons();
+      renderFileList();
+      updateFooterCounts();
+      setupDraggablePane();
+    };
+
+    // FILTER & SEARCH HANDLERS
+    function setFilter(filterType) {
+      activeFilter = filterType;
+      ['ALL', 'STAGED', 'UNSTAGED'].forEach(ft => {
+        const btn = document.getElementById(`filter-btn-${ft}`);
+        if (ft === filterType) {
+          btn.className = "px-1.5 py-0.5 rounded bg-mocha-surface1 text-mocha-text font-bold";
+        } else {
+          btn.className = "px-1.5 py-0.5 rounded text-mocha-subtext0 hover:text-mocha-text";
+        }
+      });
+      renderFileList();
+    }
+
+    function onSearchInput(val) {
+      searchQuery = val.toLowerCase().trim();
+      renderFileList();
+    }
+
+    function getFilteredFiles() {
+      return filesData.filter(f => {
+        if (activeFilter === 'STAGED' && !f.staged) return false;
+        if (activeFilter === 'UNSTAGED' && f.staged) return false;
+
+        if (searchQuery !== '') {
+          const matchPath = f.path.toLowerCase().includes(searchQuery);
+          const matchNote = f.agentNotes.some(n => n.summary.toLowerCase().includes(searchQuery) || n.agent.toLowerCase().includes(searchQuery));
+          return matchPath || matchNote;
+        }
+
+        return true;
+      });
+    }
+
+    // MAIN RENDERER FOR FILE TREE AND COMPACT NOTES
+    function renderFileList() {
+      const container = document.getElementById('file-list-container');
+      container.innerHTML = '';
+      const files = getFilteredFiles();
+
+      document.getElementById('pane-file-count-badge').innerText = files.length;
+
+      if (files.length === 0) {
+        container.innerHTML = `<div class="p-4 text-center text-[11px] text-mocha-overlay0">No matching changes found.</div>`;
+        return;
+      }
+
+      files.forEach(f => {
+        const isFileExpanded = expandedFileIds.has(f.id);
+        const statusBadge = getStatusBadge(f.status);
+
+        // File Item Wrapper
+        const fileGroup = document.createElement('div');
+        fileGroup.className = "space-y-0.5";
+
+        // Compact File Row (Height ~26px)
+        const fileRow = document.createElement('div');
+        fileRow.className = `h-7 px-1.5 rounded flex items-center justify-between text-[11px] cursor-pointer transition select-none ${
+          isFileExpanded ? 'bg-mocha-surface0/60 text-mocha-text' : 'hover:bg-mocha-surface0/30 text-mocha-subtext0 hover:text-mocha-text'
+        }`;
+
+        fileRow.onclick = () => toggleFileExpand(f.id);
+
+        fileRow.innerHTML = `
+          <!-- Left: Expand Chevron, Stage Checkbox, Status Badge, File Path -->
+          <div class="flex items-center space-x-1.5 truncate pr-1">
+            <span class="text-mocha-overlay0 hover:text-mocha-mauve w-3 h-3 flex items-center justify-center">
+              <i data-lucide="${isFileExpanded ? 'chevron-down' : 'chevron-right'}" class="w-3 h-3"></i>
+            </span>
+
+            <span onclick="event.stopPropagation(); toggleStageFile('${f.id}')" title="${f.staged ? 'Unstage' : 'Stage'}" class="cursor-pointer hover:scale-110 transition">
+              <i data-lucide="${f.staged ? 'check-square' : 'square'}" class="w-3.5 h-3.5 ${f.staged ? 'text-mocha-green' : 'text-mocha-overlay0'}"></i>
+            </span>
+
+            <span class="font-bold text-[10px] px-1 py-0 rounded ${statusBadge.colorClass}">
+              ${f.status}
+            </span>
+
+            <span class="truncate font-mono">
+              <span class="text-mocha-overlay0 font-normal">${f.dir}</span><span class="font-semibold text-mocha-text">${f.name}</span>
+            </span>
+          </div>
+
+          <!-- Right: Diff stats and Note Count Pill -->
+          <div class="flex items-center space-x-1.5 shrink-0 text-[10px]">
+            <span class="text-mocha-overlay0">
+              <span class="text-mocha-green">+${f.additions}</span>/<span class="text-mocha-red">-${f.deletions}</span>
+            </span>
+
+            ${f.agentNotes.length > 0 ? `
+              <span class="px-1.5 py-0.2 rounded-full bg-mocha-mauve/15 border border-mocha-mauve/30 text-mocha-mauve font-semibold flex items-center space-x-1">
+                <i data-lucide="sparkles" class="w-2.5 h-2.5"></i>
+                <span>${f.agentNotes.length}</span>
+              </span>
+            ` : ''}
+          </div>
+        `;
+
+        fileGroup.appendChild(fileRow);
+
+        // NESTED MINIMALIST AGENT NOTES (Shown when File is Expanded)
+        if (isFileExpanded) {
+          const notesContainer = document.createElement('div');
+          notesContainer.className = "relative pl-6 space-y-1 my-1";
+
+          if (f.agentNotes.length === 0) {
+            notesContainer.innerHTML = `
+              <div class="tree-guide-line"></div>
+              <div class="text-[10px] text-mocha-overlay0 italic pl-2 py-0.5">Manual edit — no discrete agent notes.</div>
+            `;
+          } else {
+            // Add Tree Guide Line
+            const guide = document.createElement('div');
+            guide.className = "tree-guide-line";
+            notesContainer.appendChild(guide);
+
+            f.agentNotes.forEach(note => {
+              const isNoteExpanded = expandedNoteIds.has(note.id);
+
+              const noteWrapper = document.createElement('div');
+              noteWrapper.className = "relative text-[11px]";
+
+              // Compact Note Row (No Code Shown by Default)
+              const noteRow = document.createElement('div');
+              noteRow.className = `group p-1.5 rounded border transition cursor-pointer flex flex-col justify-center ${
+                isNoteExpanded 
+                  ? 'bg-mocha-surface0 border-mocha-mauve/50 text-mocha-text shadow-sm' 
+                  : 'bg-mocha-surface0/30 border-mocha-surface0 hover:border-mocha-surface1 text-mocha-subtext1 hover:text-mocha-text'
+              }`;
+
+              noteRow.onclick = (e) => {
+                e.stopPropagation();
+                toggleNoteExpand(note.id);
+              };
+
+              noteRow.innerHTML = `
+                <div class="flex items-start justify-between space-x-2">
+                  <div class="flex items-start space-x-1.5 min-w-0">
+                    <span class="text-mocha-mauve font-bold text-xs select-none">•</span>
+                    <p class="font-sans text-[11px] font-medium leading-snug text-mocha-text hover:text-mocha-mauve transition">
+                      ${note.summary}
+                    </p>
+                  </div>
+                  
+                  <div class="flex items-center space-x-1 shrink-0 font-mono text-[10px] text-mocha-subtext0">
+                    ${note.diff ? `<i data-lucide="code-2" class="w-3 h-3 ${isNoteExpanded ? 'text-mocha-mauve' : 'text-mocha-overlay0 group-hover:text-mocha-mauve'}"></i>` : ''}
+                    <span class="text-mocha-mauve font-semibold">${note.agent}</span>
+                    <span class="text-mocha-surface2">•</span>
+                    <span>${note.time}</span>
+                  </div>
+                </div>
+
+                <!-- INLINE CODE DIFF (ONLY EXPANDED ON NOTE CLICK) -->
+                ${isNoteExpanded && note.diff ? `
+                  <div class="mt-2 bg-mocha-crust border border-mocha-surface1/60 rounded p-2 font-mono text-[10px] text-mocha-subtext1 overflow-x-auto leading-tight">
+                    <div class="flex items-center justify-between text-[9px] text-mocha-overlay0 pb-1 mb-1 border-b border-mocha-surface0">
+                      <span>Diff hunk (${note.lines})</span>
+                      <span class="text-mocha-mauve">Click to collapse</span>
+                    </div>
+                    ${renderSyntaxDiff(note.diff)}
+                  </div>
+                ` : ''}
+              `;
+
+              noteWrapper.appendChild(noteRow);
+              notesContainer.appendChild(noteWrapper);
+            });
+          }
+
+          fileGroup.appendChild(notesContainer);
+        }
+
+        container.appendChild(fileGroup);
+      });
+
+      lucide.createIcons();
+      updateFooterCounts();
+    }
+
+    // Helper: Render syntax colored lines for raw diff hunk
+    function renderSyntaxDiff(diffText) {
+      return diffText.split('\n').map(line => {
+        if (line.startsWith('+')) {
+          return `<div class="text-mocha-green bg-mocha-green/10 px-1 py-0.2 rounded-sm">${escapeHtml(line)}</div>`;
+        } else if (line.startsWith('-')) {
+          return `<div class="text-mocha-red bg-mocha-red/10 px-1 py-0.2 rounded-sm">${escapeHtml(line)}</div>`;
+        } else {
+          return `<div class="text-mocha-subtext0 px-1 py-0.2">${escapeHtml(line)}</div>`;
+        }
+      }).join('');
+    }
+
+    function escapeHtml(str) {
+      return str.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+    }
+
+    // TOGGLE FILE EXPAND / COLLAPSE
+    function toggleFileExpand(id) {
+      if (expandedFileIds.has(id)) {
+        expandedFileIds.delete(id);
+      } else {
+        expandedFileIds.add(id);
+      }
+      renderFileList();
+    }
+
+    // TOGGLE NOTE INLINE DIFF EXPAND
+    function toggleNoteExpand(noteId) {
+      if (expandedNoteIds.has(noteId)) {
+        expandedNoteIds.delete(noteId);
+      } else {
+        expandedNoteIds.add(noteId);
+      }
+      renderFileList();
+    }
+
+    function toggleExpandAll() {
+      if (expandedFileIds.size > 0) {
+        expandedFileIds.clear();
+      } else {
+        filesData.forEach(f => expandedFileIds.add(f.id));
+      }
+      renderFileList();
+    }
+
+    // STAGING TOGGLES
+    function toggleStageFile(id) {
+      const f = filesData.find(item => item.id === id);
+      if (f) {
+        f.staged = !f.staged;
+        renderFileList();
+      }
+    }
+
+    function toggleStageAll() {
+      const allStaged = filesData.every(f => f.staged);
+      filesData.forEach(f => f.staged = !allStaged);
+      renderFileList();
+    }
+
+    function updateFooterCounts() {
+      const staged = filesData.filter(f => f.staged).length;
+      const unstaged = filesData.filter(f => !f.staged).length;
+      const notes = filesData.reduce((acc, f) => acc + f.agentNotes.length, 0);
+
+      document.getElementById('footer-staged-count').innerText = staged;
+      document.getElementById('footer-unstaged-count').innerText = unstaged;
+      document.getElementById('footer-notes-count').innerText = notes;
+    }
+
+    function getStatusBadge(status) {
+      switch(status) {
+        case 'M': return { colorClass: 'bg-mocha-yellow/15 text-mocha-yellow border border-mocha-yellow/30' };
+        case 'A': return { colorClass: 'bg-mocha-green/15 text-mocha-green border border-mocha-green/30' };
+        case 'D': return { colorClass: 'bg-mocha-red/15 text-mocha-red border border-mocha-red/30' };
+        default: return { colorClass: 'bg-mocha-surface1 text-mocha-text' };
+      }
+    }
+
+
+    // =========================================================================
+    // LAYOUT SWITCHER & MOVABLE PANE LOGIC
+    // =========================================================================
+    function setLayout(layoutMode) {
+      activeLayout = layoutMode;
+      const pane = document.getElementById('git-changes-pane');
+      const container = document.getElementById('workspace-container');
+      const dragIcon = document.getElementById('drag-icon');
+      const dragHeader = document.getElementById('pane-drag-header');
+      const resizeHandle = document.getElementById('resize-handle');
+
+      // Reset Active Layout Button Styles
+      ['dock-right', 'dock-left', 'dock-bottom', 'float'].forEach(m => {
+        const btn = document.getElementById(`btn-${m}`);
+        if (m === layoutMode) {
+          btn.className = "px-2 py-1 rounded text-[11px] flex items-center space-x-1 bg-mocha-mauve text-mocha-crust font-semibold transition";
+        } else {
+          btn.className = "px-2 py-1 rounded text-[11px] flex items-center space-x-1 text-mocha-subtext0 hover:text-mocha-text transition";
+        }
+      });
+
+      // Reset inline styles
+      pane.style.position = '';
+      pane.style.left = '';
+      pane.style.top = '';
+      pane.style.width = '';
+      pane.style.height = '';
+      pane.style.zIndex = '';
+      
+      dragHeader.classList.remove('drag-handle');
+      dragIcon.classList.add('hidden');
+      resizeHandle.classList.add('hidden');
+
+      if (layoutMode === 'dock-right') {
+        container.className = "flex-1 relative flex flex-row overflow-hidden bg-mocha-base";
+        pane.className = "w-96 bg-mocha-mantle border-l border-mocha-surface0 flex flex-col h-full z-20 shadow-xl transition-all duration-150";
+      } else if (layoutMode === 'dock-left') {
+        container.className = "flex-1 relative flex flex-row-reverse overflow-hidden bg-mocha-base";
+        pane.className = "w-96 bg-mocha-mantle border-r border-mocha-surface0 flex flex-col h-full z-20 shadow-xl transition-all duration-150";
+      } else if (layoutMode === 'dock-bottom') {
+        container.className = "flex-1 relative flex flex-col overflow-hidden bg-mocha-base";
+        pane.className = "w-full h-64 bg-mocha-mantle border-t border-mocha-surface0 flex flex-col z-20 shadow-xl transition-all duration-150";
+      } else if (layoutMode === 'float') {
+        container.className = "flex-1 relative overflow-hidden bg-mocha-base";
+        pane.className = "absolute bg-mocha-mantle border border-mocha-surface1/80 rounded-xl flex flex-col z-30 shadow-2xl transition-none overflow-hidden";
+        pane.style.width = "380px";
+        pane.style.height = "480px";
+        pane.style.top = "40px";
+        pane.style.right = "40px";
+
+        dragHeader.classList.add('drag-handle');
+        dragIcon.classList.remove('hidden');
+        resizeHandle.classList.remove('hidden');
+      }
+
+      lucide.createIcons();
+    }
+
+
+    // DRAGGABLE & RESIZABLE FLOATING WINDOW IMPLEMENTATION
+    function setupDraggablePane() {
+      const pane = document.getElementById('git-changes-pane');
+      const dragHeader = document.getElementById('pane-drag-header');
+      const resizeHandle = document.getElementById('resize-handle');
+
+      let isDragging = false;
+      let startX, startY, initialLeft, initialTop;
+
+      dragHeader.addEventListener('mousedown', (e) => {
+        if (activeLayout !== 'float') return;
+        isDragging = true;
+        startX = e.clientX;
+        startY = e.clientY;
+        const rect = pane.getBoundingClientRect();
+        initialLeft = rect.left;
+        initialTop = rect.top;
+
+        document.addEventListener('mousemove', onMouseMove);
+        document.addEventListener('mouseup', onMouseUp);
+      });
+
+      function onMouseMove(e) {
+        if (!isDragging) return;
+        const dx = e.clientX - startX;
+        const dy = e.clientY - startY;
+        pane.style.left = `${initialLeft + dx}px`;
+        pane.style.top = `${initialTop + dy}px`;
+        pane.style.right = 'auto';
+      }
+
+      function onMouseUp() {
+        isDragging = false;
+        document.removeEventListener('mousemove', onMouseMove);
+        document.removeEventListener('mouseup', onMouseUp);
+      }
+
+      // Resizing floating window logic
+      let isResizing = false;
+      let resizeStartX, resizeStartY, initialWidth, initialHeight;
+
+      resizeHandle.addEventListener('mousedown', (e) => {
+        if (activeLayout !== 'float') return;
+        e.stopPropagation();
+        isResizing = true;
+        resizeStartX = e.clientX;
+        resizeStartY = e.clientY;
+        const rect = pane.getBoundingClientRect();
+        initialWidth = rect.width;
+        initialHeight = rect.height;
+
+        document.addEventListener('mousemove', onResizeMove);
+        document.addEventListener('mouseup', onResizeUp);
+      });
+
+      function onResizeMove(e) {
+        if (!isResizing) return;
+        const dw = e.clientX - resizeStartX;
+        const dh = e.clientY - resizeStartY;
+        pane.style.width = `${Math.max(280, initialWidth + dw)}px`;
+        pane.style.height = `${Math.max(250, initialHeight + dh)}px`;
+      }
+
+      function onResizeUp() {
+        isResizing = false;
+        document.removeEventListener('mousemove', onResizeMove);
+        document.removeEventListener('mouseup', onResizeUp);
+      }
+    }
+
+
+    // ADD NOTE MODAL LOGIC
+    function openAddNoteModal() {
+      const select = document.getElementById('note-file-select');
+      select.innerHTML = filesData.map(f => `<option value="${f.id}">${f.path}</option>`).join('');
+      document.getElementById('add-note-modal').classList.remove('hidden');
+    }
+
+    function closeAddNoteModal() {
+      document.getElementById('add-note-modal').classList.add('hidden');
+    }
+
+    function handleNewNoteSubmit(e) {
+      e.preventDefault();
+      const fileId = document.getElementById('note-file-select').value;
+      const desc = document.getElementById('note-desc-input').value;
+      const agent = document.getElementById('note-agent-input').value;
+      const lines = document.getElementById('note-lines-input').value || 'L1-L10';
+      const diff = document.getElementById('note-diff-input').value;
+
+      const file = filesData.find(f => f.id === fileId);
+      if (file) {
+        file.agentNotes.unshift({
+          id: 'n-' + Date.now(),
+          agent: agent,
+          time: 'Just now',
+          summary: desc,
+          lines: lines,
+          diff: diff ? diff : null
+        });
+        expandedFileIds.add(fileId);
+      }
+
+      closeAddNoteModal();
+      renderFileList();
+    }
+  </script>
+</body>
+</html>

@@ -1,0 +1,15 @@
+{
+  "name": "herdr-git-status",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "herdr-git-note": "./bin/herdr-git-note.mjs"
+  },
+  "scripts": {
+    "test": "node --test",
+    "check": "herdr-app check mods/git-status",
+    "validate": "npm run test && npm run check",
+    "note": "node ./bin/herdr-git-note.mjs"
+  }
+}

@@ -1,0 +1,5 @@
+{
+  "global": {
+    "alt-shift-g": "mod.open:git-status"
+  }
+}
