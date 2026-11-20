@@ -5,12 +5,12 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { addReviewComment } from "../src/notes-store.js";
+import { addReviewComment } from "../src/review-store.js";
 
 const repoDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const cliPath = path.join(repoDir, "bin", "herdr-git-note.mjs");
+const cliPath = path.join(repoDir, "bin", "herdr-review.mjs");
 
-test("herdr-git-note CLI stores multi-file topics, overview, suggested commits, and thread replies in <git-dir>/herdr-review.json across worktrees", async () => {
+test("herdr-review CLI stores multi-file topics, overview, suggested commits, and thread replies in <git-dir>/herdr-review.json across worktrees", async () => {
   const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "herdr-git-review-test-"));
   const mainRepo = path.join(tmpRoot, "main");
   const linkedWt = path.join(tmpRoot, "linked-wt");

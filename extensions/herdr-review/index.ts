@@ -8,7 +8,7 @@ import { Text } from "@earendil-works/pi-tui";
 import { type Static, Type } from "typebox";
 
 const extDir = path.dirname(fileURLToPath(import.meta.url));
-const cliPath = path.resolve(extDir, "..", "..", "bin", "herdr-git-note.mjs");
+const cliPath = path.resolve(extDir, "..", "..", "bin", "herdr-review.mjs");
 
 function runCliJson(args: string[], stdinPayload?: unknown): any {
   const out = execFileSync("node", [cliPath, ...args], {
@@ -129,7 +129,7 @@ export const RecordChangeTopicsParams = Type.Object({
   overview: Type.Optional(
     Type.String({
       description:
-        "High-level 1-3 sentence overall summary of the changeset displayed at the top of Herdr Git Review",
+        "High-level 1-3 sentence overall summary of the changeset displayed at the top of Herdr Review",
     }),
   ),
   topics: Type.Optional(
@@ -226,9 +226,9 @@ export default function herdrGitReviewExtension(pi: ExtensionAPI) {
     name: "record_change_topics",
     label: "Record Change Topics",
     description:
-      "Record a high-level overall summary, logical multi-file Change Topics, and a suggested commit message in <git-dir>/herdr-review.json for Herdr's Git Review workspace pane.",
+      "Record a high-level overall summary, logical multi-file Change Topics, and a suggested commit message in <git-dir>/herdr-review.json for Herdr Review.",
     promptSnippet:
-      "Record an overall summary, logical review Topics, and a suggested commit message for Herdr Git Review",
+      "Record an overall summary, logical review Topics, and a suggested commit message for Herdr Review",
     promptGuidelines: [
       "After modifying or creating repository files with `edit` or `write`, call `record_change_topics` with a concise high-level `overview`, logical `topics` grouping related file changes by intent, and an up-to-date `suggestedCommit` (`{ subject, body? }`).",
     ],
@@ -376,11 +376,11 @@ export default function herdrGitReviewExtension(pi: ExtensionAPI) {
     name: "review_threads",
     label: "Review Threads",
     description:
-      "List open code-review threads from Herdr Git Review or post agent replies marking threads as addressed.",
+      "List open code-review threads from Herdr Review or post agent replies marking threads as addressed.",
     promptSnippet:
-      "List or reply to inline code-review threads submitted from the Herdr Git Review pane",
+      "List or reply to inline code-review threads submitted from the Herdr Review pane",
     promptGuidelines: [
-      "When addressing review comments from Herdr Git Review, reply to each `[Thread id]` via `review_threads` (`action: 'reply'`, `status: 'addressed'`) explaining the fix or answer.",
+      "When addressing review comments from Herdr Review, reply to each `[Thread id]` via `review_threads` (`action: 'reply'`, `status: 'addressed'`) explaining the fix or answer.",
     ],
     parameters: ReviewThreadsParams,
     executionMode: "sequential",
@@ -490,7 +490,7 @@ export default function herdrGitReviewExtension(pi: ExtensionAPI) {
           ? ` There ${openCount === 1 ? "is 1 open review thread" : `are ${openCount} open review threads`} in this repository—use \`review_threads\` to inspect or reply as you address them.`
           : "";
       event.systemPromptOptions.sections.herdr_git_review =
-        `Keep Herdr Git Review updated via \`record_change_topics\` (or \`tools.record_change_topics\` in \`codemode\`): provide a concise high-level \`overview\`, group related edits into logical \`topics\`, and set \`suggestedCommit\`.${openHint}`;
+        `Keep Herdr Review updated via \`record_change_topics\` (or \`tools.record_change_topics\` in \`codemode\`): provide a concise high-level \`overview\`, group related edits into logical \`topics\`, and set \`suggestedCommit\`.${openHint}`;
     } catch {
       delete event.systemPromptOptions.sections.herdr_git_review;
     }
@@ -526,7 +526,7 @@ export default function herdrGitReviewExtension(pi: ExtensionAPI) {
         {
           type: "custom_message",
           customType: "herdr-git-review-reminder",
-          content: `You modified repository file(s) not yet grouped in Herdr Git Review: ${files.join(", ")}. Call \`record_change_topics\` to group them by logical intent${extraText}, then conclude briefly.`,
+          content: `You modified repository file(s) not yet grouped in Herdr Review: ${files.join(", ")}. Call \`record_change_topics\` to group them by logical intent${extraText}, then conclude briefly.`,
           display: false,
         },
       ],
@@ -535,7 +535,7 @@ export default function herdrGitReviewExtension(pi: ExtensionAPI) {
   });
 
   pi.registerCommand("git-review", {
-    description: "Inspect, prune, or clear Herdr Git Review topics and threads in the current repository",
+    description: "Inspect, prune, or clear Herdr Review topics and threads in the current repository",
     handler: async (args: string, ctx: any) => {
       const sub = (args || "list").trim().toLowerCase();
       try {

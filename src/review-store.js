@@ -19,7 +19,7 @@ import {
   setThreadStatusInDocument,
   sliceUnifiedHunks,
   upsertTopicsInDocument,
-} from "../mods/git-status/model.js";
+} from "../mods/review/model.js";
 
 function safeRealpath(targetPath) {
   const resolved = path.resolve(targetPath);

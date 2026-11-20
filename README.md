@@ -1,6 +1,6 @@
-# Herdr Git Review (`git-status`)
+# Herdr Review (`herdr-review`)
 
-A movable, splittable native GPUI workspace pane and Pi package for **pre-commit code review** in Herdr:
+A movable, splittable native GPUI workspace pane (`mods/review`) and Pi package for **pre-commit code review** in Herdr:
 - **Summary + Logical Change Topics**: Displays a collapsible **Summary** card at the top, followed by multi-file **Change Topics** grouped by intent (with an automatic **Unattributed / Manual Changes** bucket guaranteeing 100% of `git status` is always visible).
 - **Interactive Review Comments (`hc send` + Clipboard)**: Click any diff line, file, or topic to queue **Draft** review comments, then click **`Submit Review → pi (N)`** to dispatch them straight into the space's live agent terminal (with multi-turn `Draft → Open → Addressed → Resolved` threads).
 - **On-Demand Commit Dialog**: Clicking **`Commit…`** (or pressing `c` when the pane is focused) opens a dedicated **Commit Changes** dialog pre-filled with `suggestedCommit` (`subject` + `body`), an interactive `Staged only` vs `All files` scope switch, and a non-blocking warning badge if unresolved comments exist.
@@ -9,12 +9,12 @@ A movable, splittable native GPUI workspace pane and Pi package for **pre-commit
 
 ```sh
 # Toggle split pane in the active tab (default shortcut: Alt+Shift+G)
-herdr-app do mod.open --name git-status
+herdr-app do mod.open --name review
 
 # Or split/dock explicitly in any direction ("right" or "down") or as a standalone tab
-herdr-app do pane.split --direction right --mod git-status
-herdr-app do pane.split --direction down --mod git-status
-herdr-app do tab.new --name "Git Review" --mod git-status
+herdr-app do pane.split --direction right --mod review
+herdr-app do pane.split --direction down --mod review
+herdr-app do tab.new --name "Review" --mod review
 ```
 
 Switch between **`Topics`** (grouped by logical intent) and **`Files`** (classic file list) in the top-left toggle. Filter by **`All | Staged | Unstaged | Open`**.
@@ -29,20 +29,20 @@ Installing this repository into Pi registers:
 
 ```sh
 # Local live development (run /reload in active Pi sessions)
-pi install C:/Users/bryan.petzinger/workspace/herdr-git-status
+pi install <path-to-herdr-review>
 
 # From GitHub or npm once published
-pi install git:github.com/<owner>/herdr-git-status
-pi install npm:herdr-git-status
+pi install git:github.com/<owner>/herdr-review
+pi install npm:herdr-review
 ```
 
-## CLI Usage (`bin/herdr-git-note.mjs`)
+## CLI Usage (`bin/herdr-review.mjs`)
 
 State is persisted per checkout/worktree in `<git-dir>/herdr-review.json` so `git status` stays clean:
 
 ```sh
 # Upsert a multi-file logical topic + overview + suggested commit message
-node bin/herdr-git-note.mjs topic \
+node bin/herdr-review.mjs topic \
   --title "Thread tenantId through session validation & routes" \
   --overview "Propagates tenantId across auth validation and API route handlers." \
   --files "src/auth/session.ts,src/api/routes.ts" \
@@ -51,16 +51,16 @@ node bin/herdr-git-note.mjs topic \
   --agent pi
 
 # Reply to an open review thread
-node bin/herdr-git-note.mjs reply --thread t-1234abcd --body "Made tenantId required and updated callers" --agent pi
+node bin/herdr-review.mjs reply --thread t-1234abcd --body "Made tenantId required and updated callers" --agent pi
 
 # Inspect or prune committed topics & resolved threads
-node bin/herdr-git-note.mjs list
-node bin/herdr-git-note.mjs clear --prune-clean
+node bin/herdr-review.mjs list
+node bin/herdr-review.mjs clear --prune-clean
 ```
 
 ## Validation
 
 ```sh
 npm run validate
-herdr-app check ~/.config/herdr-app/mods/git-status
+herdr-app check ~/.config/herdr-app/mods/review
 ```

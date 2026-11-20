@@ -28,7 +28,7 @@ import {
   stagePathsCommandArgs,
   upsertTopicsInDocument,
   withAlpha,
-} from "../mods/git-status/model.js";
+} from "../mods/review/model.js";
 
 test("normalizeRepoPath handles Windows separators, repo roots, and leading ./", () => {
   assert.equal(
@@ -39,7 +39,7 @@ test("normalizeRepoPath handles Windows separators, repo roots, and leading ./",
   assert.equal(normalizeRepoPath("README.md"), "README.md");
 });
 
-test("resolveWorkspaceLocation preserves sibling terminal cwd when git-status mod pane is focused", () => {
+test("resolveWorkspaceLocation preserves sibling terminal cwd when review mod pane is focused", () => {
   const lastCwdBySpace = new Map();
   const spaces = [
     {
@@ -53,7 +53,7 @@ test("resolveWorkspaceLocation preserves sibling terminal cwd when git-status mo
   ];
   const panes = [
     { pane: "p-term", tab: "tb1", terminal: "t1", cwd: "C:/repo/service-outbox", branch: "feat/outbox" },
-    { pane: "p-mod", tab: "tb1", terminal: null, mod: "git-status", cwd: null, branch: null },
+    { pane: "p-mod", tab: "tb1", terminal: null, mod: "review", cwd: null, branch: null },
   ];
 
   const loc = resolveWorkspaceLocation({
@@ -77,14 +77,14 @@ test("planPaneToggle splits right when absent and closes pane when present", () 
   });
   assert.deepEqual(openAction, {
     command: "pane.split",
-    args: { direction: "right", pane: "p1", mod: "git-status" },
+    args: { direction: "right", pane: "p1", mod: "review" },
   });
 
   const closeAction = planPaneToggle({
     spaces,
     panes: [
       { pane: "p1", tab: "tb1", terminal: "t1" },
-      { pane: "p2", tab: "tb1", terminal: null, mod: "git-status" },
+      { pane: "p2", tab: "tb1", terminal: null, mod: "review" },
     ],
     focused: { space: "sp1", tab: "tb1", pane: "p2" },
   });

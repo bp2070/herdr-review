@@ -2,9 +2,9 @@
 // review dispatch formatting, and Catppuccin Mocha palette helpers.
 // Keep free of Herdr, GPUI, and Node-specific imports.
 
-export const MOD_NAME = "git-status";
+export const MOD_NAME = "review";
 export const REVIEW_FILENAME = "herdr-review.json";
-export const SHARED_BUMP_KEY = "git-status.bump";
+export const SHARED_BUMP_KEY = "review.bump";
 export const UNATTRIBUTED_TOPIC_ID = "__unattributed__";
 
 // Prevent read-only git calls from touching .git/index or fsmonitor cookies (avoids watch loops).
@@ -218,7 +218,7 @@ export function planPaneToggle({
     null;
 
   if (!space || !activeTab) {
-    return { command: "tab.new", args: { name: "Git Review", mod: modName } };
+    return { command: "tab.new", args: { name: "Review", mod: modName } };
   }
 
   const tabPanes = panes.filter((p) => p.tab === activeTab.id);
@@ -244,7 +244,7 @@ export function planPaneToggle({
 
   return {
     command: "tab.new",
-    args: { name: "Git Review", space: space.id, mod: modName },
+    args: { name: "Review", space: space.id, mod: modName },
   };
 }
 
@@ -1193,7 +1193,7 @@ export function formatReviewDispatchPrompt(threads = [], topics = []) {
 
   const topicTitleById = new Map(topics.map((t) => [t.id, t.title]));
   const lines = [
-    `Code review feedback (${active.length} comment${active.length === 1 ? "" : "s"}) from Herdr Git Review:`,
+    `Code review feedback (${active.length} comment${active.length === 1 ? "" : "s"}) from Herdr Review:`,
     "",
   ];
 

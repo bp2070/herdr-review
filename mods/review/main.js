@@ -1485,7 +1485,7 @@ export default class GitReviewView extends View {
   openAddTopicModal(initialPaths = []) {
     if (!this.root || !this.reviewPath) {
       notify({
-        title: "Git Review",
+        title: "Review",
         body: "Open a Git repository in the active space first.",
         level: "warning",
       });
@@ -1516,7 +1516,7 @@ export default class GitReviewView extends View {
   openCommitModal() {
     if (!this.root || !this.files.length) {
       notify({
-        title: "Git Review",
+        title: "Review",
         body: this.root ? "No uncommitted changes to commit." : "Open a Git repository first.",
         level: "info",
       });

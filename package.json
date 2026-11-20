@@ -1,5 +1,5 @@
 {
-  "name": "herdr-git-status",
+  "name": "herdr-review",
   "version": "0.1.0",
   "private": true,
   "type": "module",
@@ -8,11 +8,11 @@
     "herdr-mod"
   ],
   "bin": {
-    "herdr-git-note": "./bin/herdr-git-note.mjs"
+    "herdr-review": "./bin/herdr-review.mjs"
   },
   "pi": {
     "extensions": [
-      "./extensions/herdr-git-notes/index.ts"
+      "./extensions/herdr-review/index.ts"
     ]
   },
   "peerDependencies": {
@@ -23,8 +23,8 @@
   },
   "scripts": {
     "test": "node --test",
-    "check": "herdr-app check mods/git-status",
+    "check": "herdr-app check mods/review",
     "validate": "npm run test && npm run check",
-    "note": "node ./bin/herdr-git-note.mjs"
+    "review": "node ./bin/herdr-review.mjs"
   }
 }

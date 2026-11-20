@@ -1,5 +1,5 @@
 {
   "global": {
-    "alt-shift-g": "mod.open:git-status"
+    "alt-shift-g": "mod.open:review"
   }
 }

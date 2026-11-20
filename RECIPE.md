@@ -1,6 +1,6 @@
-# Git Review
+# Herdr Review
 
-A movable Herdr workspace pane (`mods/git-status`) for reviewing uncommitted changes with a top **Summary**, logical multi-file **Change Topics**, back-and-forth inline review threads with live coding agents, and an on-demand **Commit Changes** dialog.
+A movable Herdr workspace pane (`mods/review`) for reviewing uncommitted changes with a top **Summary**, logical multi-file **Change Topics**, back-and-forth inline review threads with live coding agents, and an on-demand **Commit Changes** dialog.
 
 ## What you see
 
@@ -18,15 +18,15 @@ Top to bottom inside a 1px-bordered Catppuccin Mocha / theme-aware pane:
 
 ## How it behaves
 
-- `Alt+Shift+G` (`mod.open:git-status`) toggles the split pane in the active tab.
+- `Alt+Shift+G` (`mod.open:review`) toggles the split pane in the active tab.
 - Every dirty file in `git status` not claimed by a topic appears automatically in **Unattributed / Manual Changes**.
 - Clicking any diff line queues a `Draft` comment; clicking **Submit Review** promotes drafts to `Open` and sends a structured prompt via `hc send` to the space's agent terminal (falling back to clipboard if busy/absent).
 - Committing runs `git commit` on staged changes (or `git add -A && git commit` when nothing is staged) and prunes clean topics, resolved threads, and overview.
 
 ## Built from
 
-- `mods/git-status/mod.json`, `mods/git-status/main.js`, `mods/git-status/model.js`, and vector icons in `mods/git-status/*.svg`.
-- `extensions/herdr-git-notes/index.ts`, `src/notes-store.js`, and `bin/herdr-git-note.mjs` persisting `<git-dir>/herdr-review.json`.
+- `mods/review/mod.json`, `mods/review/main.js`, `mods/review/model.js`, and vector icons in `mods/review/*.svg`.
+- `extensions/herdr-review/index.ts`, `src/review-store.js`, and `bin/herdr-review.mjs` persisting `<git-dir>/herdr-review.json`.
 
 ## Watch out
 
@@ -37,5 +37,5 @@ Top to bottom inside a 1px-bordered Catppuccin Mocha / theme-aware pane:
 
 ## Done when
 
-- `npm run validate` and `herdr-app check ~/.config/herdr-app/mods/git-status` pass with zero errors in `herdr-app status`.
-- Overall summary, multi-file topics, unattributed edits, inline line comments, `Submit Review`, and the `Commit…` dialog work end-to-end without dirtying `git status`.
+- `npm run validate` and `herdr-app check ~/.config/herdr-app/mods/review` pass with zero errors in `herdr-app status`.
+- Summary, multi-file topics, unattributed edits, inline line comments, `Submit Review`, and the `Commit…` dialog work end-to-end without dirtying `git status`.

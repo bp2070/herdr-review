@@ -7,15 +7,15 @@ import {
   removeReviewTopic,
   updateReviewThreadStatus,
   upsertReviewTopics,
-} from "../src/notes-store.js";
+} from "../src/review-store.js";
 
 function usage() {
   return `Usage:
-  herdr-git-note topic --title <text> --files <p1,p2> [--overview <text>] [--rationale <text>] [--commit <subject>] [--body <text>] [--agent <name>] [--cwd <dir>] [--json]
-  herdr-git-note reply --thread <id> --body <text> [--status addressed|open|resolved] [--agent <name>] [--cwd <dir>] [--json]
-  herdr-git-note list [--cwd <dir>] [--json]
-  herdr-git-note remove --id <topic-id> [--cwd <dir>] [--json]
-  herdr-git-note clear [--prune-clean] [--cwd <dir>] [--json]
+  herdr-review topic --title <text> --files <p1,p2> [--overview <text>] [--rationale <text>] [--commit <subject>] [--body <text>] [--agent <name>] [--cwd <dir>] [--json]
+  herdr-review reply --thread <id> --body <text> [--status addressed|open|resolved] [--agent <name>] [--cwd <dir>] [--json]
+  herdr-review list [--cwd <dir>] [--json]
+  herdr-review remove --id <topic-id> [--cwd <dir>] [--json]
+  herdr-review clear [--prune-clean] [--cwd <dir>] [--json]
 `;
 }
 
