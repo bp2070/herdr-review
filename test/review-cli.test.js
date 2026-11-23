@@ -101,6 +101,18 @@ test("herdr-review CLI stores multi-file topics, overview, suggested commits, an
     );
     assert.equal(listWt.doc.topics.length, 0);
     assert.equal(listWt.doc.threads.length, 0);
+
+    // Committing changes in mainRepo automatically clears stale overview, suggestedCommit, and committed topics
+    execFileSync("git", ["add", "."], { cwd: mainRepo });
+    execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "feat(outbox): add configurable retry jitter"], {
+      cwd: mainRepo,
+    });
+    const listAfterCommit = JSON.parse(
+      execFileSync(process.execPath, [cliPath, "list", "--cwd", mainRepo, "--json"], { encoding: "utf8" }),
+    );
+    assert.equal(listAfterCommit.doc.overview, null);
+    assert.equal(listAfterCommit.doc.suggestedCommit, null);
+    assert.equal(listAfterCommit.doc.topics.length, 0);
   } finally {
     await fs.rm(tmpRoot, { recursive: true, force: true });
   }

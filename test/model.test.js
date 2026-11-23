@@ -274,6 +274,63 @@ test("ReviewThread back-and-forth lifecycle, dispatch prompt, and post-commit pr
   assert.equal(pruned.doc.threads.length, 0);
 });
 
+test("summary and suggestedCommit reset after full or partial commit and hide when working tree is clean", () => {
+  const initial = upsertTopicsInDocument("", {
+    overview: "Updates auth session validation and outbox retry jitter.",
+    suggestedCommit: {
+      subject: "feat: auth session validation and outbox retry jitter",
+      body: "- auth\n- outbox",
+    },
+    topics: [
+      { id: "tpc-1", title: "Thread tenantId in auth", files: [{ filePath: "src/auth.ts" }] },
+      { id: "tpc-2", title: "Add retry jitter in outbox", files: [{ filePath: "src/outbox.ts" }] },
+    ],
+    nowIso: "2026-11-20T16:20:00.000Z",
+  });
+
+  // When working tree has 0 dirty files (e.g. right after terminal git commit), summary must be null
+  assert.equal(
+    deriveOverviewInfo({
+      files: [],
+      topics: initial.doc.topics,
+      overview: initial.doc.overview,
+    }),
+    null,
+  );
+
+  // When all recorded topic files are clean and only an unrelated file is dirty, stale overview is ignored
+  const unrelatedOverview = deriveOverviewInfo({
+    files: [{ path: "notes.txt", additions: 2, deletions: 0 }],
+    topics: initial.doc.topics,
+    overview: initial.doc.overview,
+  });
+  assert.equal(unrelatedOverview.synthesized, true);
+  assert.match(unrelatedOverview.text, /1 uncommitted file in working tree/);
+
+  // Partial commit: src/auth.ts was committed, leaving src/outbox.ts dirty
+  const afterPartial = pruneCleanStateInDocument(initial.text, new Set(["src/outbox.ts"]));
+  assert.equal(afterPartial.removedTopics, 1);
+  assert.equal(afterPartial.doc.topics.length, 1);
+  assert.equal(afterPartial.doc.topics[0].id, "tpc-2");
+  assert.equal(afterPartial.doc.overview, null);
+  assert.equal(afterPartial.doc.suggestedCommit, null);
+
+  // Remaining dirty topic synthesizes fresh summary & commit suggestion
+  const remainingOverview = deriveOverviewInfo({
+    files: [{ path: "src/outbox.ts", additions: 5, deletions: 1 }],
+    topics: afterPartial.doc.topics,
+    overview: afterPartial.doc.overview,
+  });
+  assert.equal(remainingOverview.synthesized, true);
+  assert.equal(remainingOverview.text, "Add retry jitter in outbox");
+
+  // Full commit with leftover untracked file clears topics, overview, and suggestedCommit
+  const afterAllTopicsCommitted = pruneCleanStateInDocument(initial.text, new Set(["untracked.txt"]));
+  assert.equal(afterAllTopicsCommitted.doc.topics.length, 0);
+  assert.equal(afterAllTopicsCommitted.doc.overview, null);
+  assert.equal(afterAllTopicsCommitted.doc.suggestedCommit, null);
+});
+
 test("deriveCommitSuggestion scopes to staged topic when partial staging is active and builds git commit args", () => {
   const topics = [
     { id: "t1", title: "feat(auth): thread tenantId", rationale: "Isolate tenants.", files: [{ filePath: "a.ts" }] },

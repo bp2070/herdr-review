@@ -969,14 +969,20 @@ export function promoteDraftThreadsToOpen(docText, nowIso = new Date().toISOStri
   };
 }
 
-export function pruneCleanStateInDocument(docText, dirtyPathsSet, { dropResolvedThreads = true } = {}) {
+export function pruneCleanStateInDocument(
+  docText,
+  dirtyPathsSet,
+  { dropResolvedThreads = true, resetSummary = false } = {},
+) {
   const doc = parseReviewDocument(docText);
   const keep = dirtyPathsSet instanceof Set ? dirtyPathsSet : new Set(dirtyPathsSet ?? []);
 
   const topics = [];
   let removedTopics = 0;
+  let removedTopicFiles = 0;
   for (const t of doc.topics) {
     const remainingFiles = t.files.filter((f) => keep.has(f.filePath));
+    removedTopicFiles += t.files.length - remainingFiles.length;
     if (remainingFiles.length > 0) {
       topics.push({ ...t, files: remainingFiles });
     } else {
@@ -990,10 +996,17 @@ export function pruneCleanStateInDocument(docText, dirtyPathsSet, { dropResolved
     return true;
   });
 
+  const clearSummary =
+    resetSummary ||
+    keep.size === 0 ||
+    removedTopics > 0 ||
+    removedTopicFiles > 0 ||
+    (doc.topics.length > 0 && topics.length === 0);
+
   const nextDoc = {
     version: 2,
-    overview: keep.size === 0 ? null : doc.overview,
-    suggestedCommit: keep.size === 0 ? null : doc.suggestedCommit,
+    overview: clearSummary ? null : doc.overview,
+    suggestedCommit: clearSummary ? null : doc.suggestedCommit,
     topics,
     threads,
   };
@@ -1223,10 +1236,14 @@ export function formatReviewDispatchPrompt(threads = [], topics = []) {
 }
 
 export function deriveOverviewInfo({ files = [], topics = [], overview = null } = {}) {
+  if (!files.length) return null;
+
   const additions = files.reduce((acc, f) => acc + (f.additions || 0), 0);
   const deletions = files.reduce((acc, f) => acc + (f.deletions || 0), 0);
+  const dirtyPaths = new Set(files.map((f) => f.path));
+  const activeTopics = topics.filter((t) => t.files.some((tf) => dirtyPaths.has(tf.filePath)));
 
-  if (overview?.text) {
+  if (overview?.text && (topics.length === 0 || activeTopics.length > 0)) {
     return {
       text: overview.text,
       agentName: overview.agentName || "",
@@ -1237,10 +1254,6 @@ export function deriveOverviewInfo({ files = [], topics = [], overview = null } 
     };
   }
 
-  if (!files.length) return null;
-
-  const dirtyPaths = new Set(files.map((f) => f.path));
-  const activeTopics = topics.filter((t) => t.files.some((tf) => dirtyPaths.has(tf.filePath)));
   if (activeTopics.length === 1) {
     const t = activeTopics[0];
     return {
@@ -1296,14 +1309,14 @@ export function deriveCommitSuggestion({ files = [], topics = [], suggestedCommi
     }
   }
 
-  if (suggestedCommit?.subject) {
+  const activeTopics = topics.filter((t) => t.files.some((tf) => targetPaths.has(tf.filePath)));
+  if (suggestedCommit?.subject && (topics.length === 0 || activeTopics.length > 0)) {
     return {
       subject: suggestedCommit.subject,
       body: suggestedCommit.body || "",
     };
   }
 
-  const activeTopics = topics.filter((t) => t.files.some((tf) => targetPaths.has(tf.filePath)));
   if (activeTopics.length === 1) {
     return {
       subject: activeTopics[0].title,
@@ -1341,11 +1354,13 @@ export function computeFooterCounts(files = [], topics = [], threads = []) {
     if (f.hasStaged) staged += 1;
     if (f.hasUnstaged) unstaged += 1;
   }
+  const dirtyPaths = new Set(files.map((f) => f.path));
+  const activeTopics = topics.filter((t) => t.files.some((tf) => dirtyPaths.has(tf.filePath)));
   const threadStats = countActiveReviewThreads(threads);
   return {
     staged,
     unstaged,
-    topics: topics.length,
+    topics: activeTopics.length,
     ...threadStats,
   };
 }

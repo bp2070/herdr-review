@@ -67,6 +67,7 @@ import {
   removeTopicFromDocument,
   resolvePalette,
   resolveWorkspaceLocation,
+  serializeReviewDocument,
   setThreadStatusInDocument,
   sliceUnifiedHunks,
   stageAllCommandArgs,
@@ -690,7 +691,10 @@ export default class GitReviewView extends View {
               ? new Set(parsePorcelainStatusZ(postStatus.stdout, 10000).entries.map((e) => e.path))
               : new Set();
           await mutateReviewFile(reviewPath, on, (seed) =>
-            pruneCleanStateInDocument(seed, remainingPaths, { dropResolvedThreads: true }),
+            pruneCleanStateInDocument(seed, remainingPaths, {
+              dropResolvedThreads: true,
+              resetSummary: true,
+            }),
           ).catch(() => {});
         }
 
@@ -995,6 +999,7 @@ export default class GitReviewView extends View {
     this.on = null;
     this.branch = null;
     this.hasHead = true;
+    this.headSha = null;
 
     this.files = [];
     this.limited = false;
@@ -1172,6 +1177,7 @@ export default class GitReviewView extends View {
       this.root = null;
       this.gitDir = null;
       this.reviewPath = null;
+      this.headSha = null;
       this.files = [];
       this.reviewDoc = emptyReviewDocument();
       this.fullDiffCache.clear();
@@ -1211,6 +1217,7 @@ export default class GitReviewView extends View {
           this.gitDir = null;
           this.reviewPath = null;
           this.branch = null;
+          this.headSha = null;
           this.files = [];
           this.reviewDoc = emptyReviewDocument();
           this.error = "Not a Git repository";
@@ -1261,12 +1268,46 @@ export default class GitReviewView extends View {
           unstagedStats,
           untrackedLineCounts,
         );
-        const reviewDoc = parseReviewDocument(reviewRaw ?? "");
+        const headSha = headRes.code === 0 ? headRes.stdout.trim() : "";
+        const headChanged = Boolean(
+          this.root === root && this.headSha && headSha && this.headSha !== headSha,
+        );
+        const dirtyPaths = new Set(parsedStatus.entries.map((e) => e.path));
+        const parsedDoc = parseReviewDocument(reviewRaw ?? "");
+        const hasCleanTopicFiles = parsedDoc.topics.some((t) =>
+          t.files.some((f) => !dirtyPaths.has(f.filePath)),
+        );
+        const hasStaleEmptyState =
+          dirtyPaths.size === 0 &&
+          Boolean(
+            parsedDoc.overview ||
+              parsedDoc.suggestedCommit ||
+              parsedDoc.topics.length > 0 ||
+              parsedDoc.threads.some((t) => t.status === "resolved"),
+          );
+
+        let reviewDoc = parsedDoc;
+        if (reviewRaw !== null && (headChanged || hasCleanTopicFiles || hasStaleEmptyState)) {
+          const pruned = pruneCleanStateInDocument(reviewRaw, dirtyPaths, {
+            dropResolvedThreads: true,
+            resetSummary: headChanged,
+          });
+          reviewDoc = pruned.doc;
+          if (pruned.text !== serializeReviewDocument(parsedDoc)) {
+            await mutateReviewFile(reviewPath, loc.on, (seed) =>
+              pruneCleanStateInDocument(seed, dirtyPaths, {
+                dropResolvedThreads: true,
+                resetSummary: headChanged,
+              }),
+            ).catch(() => {});
+          }
+        }
 
         this.root = root;
         this.gitDir = gitDir;
         this.reviewPath = reviewPath;
         this.hasHead = headRes.code === 0;
+        this.headSha = headSha;
         this.branch =
           branchRes.code === 0 ? branchRes.stdout.trim() : loc.branch || (this.hasHead ? "detached" : "main");
         this.files = files;

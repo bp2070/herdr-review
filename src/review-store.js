@@ -130,11 +130,47 @@ async function writeAtomic(filePath, content) {
   }
 }
 
+function readDirtyPathsSet(repoRoot) {
+  try {
+    const statusOut = execFileSync(
+      "git",
+      [...GIT_READ_ARGS, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+      { cwd: repoRoot, encoding: "utf8", stdio: ["ignore", "pipe", "pipe"] },
+    );
+    const parsed = parsePorcelainStatusZ(statusOut, 10000);
+    return new Set(parsed.entries.map((e) => e.path));
+  } catch {
+    return null;
+  }
+}
+
 export async function readReviewState({ cwd = process.cwd() } = {}) {
   const { repoRoot, gitDir, reviewFile } = resolveGitPaths(cwd);
   const raw = await readTextIfExists(reviewFile);
-  const doc = parseReviewDocument(raw);
-  return { repoRoot, gitDir, reviewFile, doc };
+  if (!raw.trim()) {
+    return { repoRoot, gitDir, reviewFile, doc: emptyReviewDocument() };
+  }
+  const parsedDoc = parseReviewDocument(raw);
+  const dirtyPaths = readDirtyPathsSet(repoRoot);
+  if (dirtyPaths) {
+    const hasCleanTopicFiles = parsedDoc.topics.some((t) =>
+      t.files.some((f) => !dirtyPaths.has(f.filePath)),
+    );
+    const hasStaleEmptyState =
+      dirtyPaths.size === 0 &&
+      Boolean(
+        parsedDoc.overview ||
+          parsedDoc.suggestedCommit ||
+          parsedDoc.topics.length > 0 ||
+          parsedDoc.threads.some((t) => t.status === "resolved"),
+      );
+    if (hasCleanTopicFiles || hasStaleEmptyState) {
+      const pruned = pruneCleanStateInDocument(raw, dirtyPaths, { dropResolvedThreads: true });
+      await writeAtomic(reviewFile, pruned.text).catch(() => {});
+      return { repoRoot, gitDir, reviewFile, doc: pruned.doc };
+    }
+  }
+  return { repoRoot, gitDir, reviewFile, doc: parsedDoc };
 }
 
 export async function upsertReviewTopics({
@@ -147,7 +183,13 @@ export async function upsertReviewTopics({
   autoHunk = true,
 } = {}) {
   const { repoRoot, reviewFile } = resolveGitPaths(cwd);
-  const current = await readTextIfExists(reviewFile);
+  let current = await readTextIfExists(reviewFile);
+  if (current.trim() && !replaceAll) {
+    const dirtyPaths = readDirtyPathsSet(repoRoot);
+    if (dirtyPaths) {
+      current = pruneCleanStateInDocument(current, dirtyPaths, { dropResolvedThreads: true }).text;
+    }
+  }
 
   const normalizedIncoming = topics.map((t) => {
     const rawFiles = Array.isArray(t.files) ? t.files : [];
