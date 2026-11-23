@@ -113,6 +113,81 @@ test("herdr-review CLI stores multi-file topics, overview, suggested commits, an
     assert.equal(listAfterCommit.doc.overview, null);
     assert.equal(listAfterCommit.doc.suggestedCommit, null);
     assert.equal(listAfterCommit.doc.topics.length, 0);
+    assert.equal(listAfterCommit.doc.headSha, null);
+  } finally {
+    await fs.rm(tmpRoot, { recursive: true, force: true });
+  }
+});
+
+test("herdr-review CLI preserves summary on single-file revert and resets it when a partial commit advances HEAD", async () => {
+  const tmpRoot = await fs.mkdtemp(path.join(os.tmpdir(), "herdr-review-headsha-"));
+  const repo = path.join(tmpRoot, "repo");
+
+  try {
+    await fs.mkdir(path.join(repo, "src"), { recursive: true });
+    execFileSync("git", ["init", "-b", "main"], { cwd: repo });
+    execFileSync("git", ["config", "user.name", "Test User"], { cwd: repo });
+    execFileSync("git", ["config", "user.email", "test@example.com"], { cwd: repo });
+    await fs.writeFile(path.join(repo, "src", "a.ts"), "export const a = 1;\n", "utf8");
+    await fs.writeFile(path.join(repo, "src", "b.ts"), "export const b = 1;\n", "utf8");
+    await fs.writeFile(path.join(repo, "src", "c.ts"), "export const c = 1;\n", "utf8");
+    execFileSync("git", ["add", "."], { cwd: repo });
+    execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "init"], { cwd: repo });
+
+    const head1 = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
+
+    await fs.writeFile(path.join(repo, "src", "a.ts"), "export const a = 2;\n", "utf8");
+    await fs.writeFile(path.join(repo, "src", "b.ts"), "export const b = 2;\n", "utf8");
+
+    const upserted = JSON.parse(
+      execFileSync(process.execPath, [cliPath, "upsert-json"], {
+        input: JSON.stringify({
+          cwd: repo,
+          overview: "Updates a and b together.",
+          suggestedCommit: { subject: "feat: update a and b" },
+          topics: [
+            {
+              id: "tpc-ab",
+              title: "Update a and b",
+              files: [{ filePath: "src/a.ts" }, { filePath: "src/b.ts" }],
+            },
+          ],
+        }),
+        encoding: "utf8",
+      }),
+    );
+    assert.equal(upserted.doc.headSha, head1);
+
+    // Reverting one file in the topic (without committing) + partial upsert keeps overview & suggestedCommit
+    execFileSync("git", ["checkout", "--", "src/b.ts"], { cwd: repo });
+    await fs.writeFile(path.join(repo, "src", "c.ts"), "export const c = 2;\n", "utf8");
+    const partialUpsert = JSON.parse(
+      execFileSync(process.execPath, [cliPath, "upsert-json"], {
+        input: JSON.stringify({
+          cwd: repo,
+          topics: [{ id: "tpc-c", title: "Update c", files: [{ filePath: "src/c.ts" }] }],
+        }),
+        encoding: "utf8",
+      }),
+    );
+    assert.equal(partialUpsert.doc.headSha, head1);
+    assert.equal(partialUpsert.doc.overview?.text, "Updates a and b together.");
+    assert.equal(partialUpsert.doc.suggestedCommit?.subject, "feat: update a and b");
+
+    // Committing only src/a.ts advances HEAD, clearing stale overview & suggestedCommit while keeping tpc-c
+    execFileSync("git", ["add", "src/a.ts"], { cwd: repo });
+    execFileSync("git", ["-c", "commit.gpgsign=false", "commit", "-m", "feat: update a"], { cwd: repo });
+    const head2 = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
+    assert.notEqual(head2, head1);
+
+    const afterPartialCommit = JSON.parse(
+      execFileSync(process.execPath, [cliPath, "list", "--cwd", repo, "--json"], { encoding: "utf8" }),
+    );
+    assert.equal(afterPartialCommit.doc.headSha, head2);
+    assert.equal(afterPartialCommit.doc.overview, null);
+    assert.equal(afterPartialCommit.doc.suggestedCommit, null);
+    assert.equal(afterPartialCommit.doc.topics.length, 1);
+    assert.equal(afterPartialCommit.doc.topics[0].id, "tpc-c");
   } finally {
     await fs.rm(tmpRoot, { recursive: true, force: true });
   }

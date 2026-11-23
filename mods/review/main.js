@@ -319,6 +319,14 @@ export default class GitReviewView extends View {
           ? { subject: this.topicCommitSubject.trim(), agentName: this.topicAgent }
           : undefined;
 
+        const headRes = root
+          ? await exec("git", [...GIT_READ_ARGS, "rev-parse", "HEAD"], { cwd: root, on }).catch(() => ({
+              code: 1,
+              stdout: "",
+            }))
+          : { code: 1, stdout: "" };
+        const headSha = headRes.code === 0 ? headRes.stdout.trim() || null : undefined;
+
         const saved = await mutateReviewFile(reviewPath, on, (seed) =>
           upsertTopicsInDocument(seed, {
             topics: [
@@ -330,6 +338,7 @@ export default class GitReviewView extends View {
               },
             ],
             suggestedCommit,
+            headSha,
             nowIso: new Date().toISOString(),
             createId: () => `tpc-${randomUUID().slice(0, 8)}`,
           }),
@@ -681,19 +690,27 @@ export default class GitReviewView extends View {
         }
 
         if (reviewPath) {
-          const postStatus = await exec(
-            "git",
-            [...GIT_READ_ARGS, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
-            { cwd: root, on },
-          );
+          const [postStatus, postHead] = await Promise.all([
+            exec(
+              "git",
+              [...GIT_READ_ARGS, "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+              { cwd: root, on },
+            ),
+            exec("git", [...GIT_READ_ARGS, "rev-parse", "HEAD"], { cwd: root, on }).catch(() => ({
+              code: 1,
+              stdout: "",
+            })),
+          ]);
           const remainingPaths =
             postStatus.code === 0
               ? new Set(parsePorcelainStatusZ(postStatus.stdout, 10000).entries.map((e) => e.path))
               : new Set();
+          const postHeadSha = postHead.code === 0 ? postHead.stdout.trim() || null : undefined;
           await mutateReviewFile(reviewPath, on, (seed) =>
             pruneCleanStateInDocument(seed, remainingPaths, {
               dropResolvedThreads: true,
               resetSummary: true,
+              headSha: postHeadSha,
             }),
           ).catch(() => {});
         }
@@ -1269,18 +1286,20 @@ export default class GitReviewView extends View {
           untrackedLineCounts,
         );
         const headSha = headRes.code === 0 ? headRes.stdout.trim() : "";
-        const headChanged = Boolean(
-          this.root === root && this.headSha && headSha && this.headSha !== headSha,
-        );
         const dirtyPaths = new Set(parsedStatus.entries.map((e) => e.path));
         const parsedDoc = parseReviewDocument(reviewRaw ?? "");
+        const headChanged = Boolean(
+          (this.root === root && this.headSha && headSha && this.headSha !== headSha) ||
+            (headSha && parsedDoc.headSha && parsedDoc.headSha !== headSha),
+        );
         const hasCleanTopicFiles = parsedDoc.topics.some((t) =>
           t.files.some((f) => !dirtyPaths.has(f.filePath)),
         );
         const hasStaleEmptyState =
           dirtyPaths.size === 0 &&
           Boolean(
-            parsedDoc.overview ||
+            parsedDoc.headSha ||
+              parsedDoc.overview ||
               parsedDoc.suggestedCommit ||
               parsedDoc.topics.length > 0 ||
               parsedDoc.threads.some((t) => t.status === "resolved"),
@@ -1291,6 +1310,7 @@ export default class GitReviewView extends View {
           const pruned = pruneCleanStateInDocument(reviewRaw, dirtyPaths, {
             dropResolvedThreads: true,
             resetSummary: headChanged,
+            headSha: headSha || undefined,
           });
           reviewDoc = pruned.doc;
           if (pruned.text !== serializeReviewDocument(parsedDoc)) {
@@ -1298,6 +1318,7 @@ export default class GitReviewView extends View {
               pruneCleanStateInDocument(seed, dirtyPaths, {
                 dropResolvedThreads: true,
                 resetSummary: headChanged,
+                headSha: headSha || undefined,
               }),
             ).catch(() => {});
           }

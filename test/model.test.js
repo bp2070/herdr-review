@@ -384,3 +384,51 @@ test("extractDiffHunkInfo, buildFullFileDiffLines, parseDiffLines, formatRelativ
   assert.equal(formatRelativeTime("2026-11-20T12:09:40.000Z", base), "Just now");
   assert.equal(withAlpha("#cba6f7ff", "1a"), "#cba6f71a");
 });
+
+test("pruneCleanStateInDocument preserves summary on single-file revert and resets on headSha change", () => {
+  const initial = upsertTopicsInDocument("", {
+    headSha: "aaaa1111",
+    overview: "Adds retry jitter across poller and types.",
+    suggestedCommit: {
+      subject: "feat(outbox): add retry jitter",
+      body: "- poller\n- types",
+    },
+    topics: [
+      {
+        id: "tpc-1",
+        title: "Retry jitter",
+        files: [{ filePath: "src/poller.ts" }, { filePath: "src/types.ts" }],
+      },
+    ],
+    nowIso: "2026-11-20T16:20:00.000Z",
+  });
+  assert.equal(initial.doc.headSha, "aaaa1111");
+
+  // Reverting one file inside an active topic with the same HEAD preserves overview & suggestedCommit
+  const afterSingleRevert = pruneCleanStateInDocument(initial.text, new Set(["src/poller.ts"]), {
+    headSha: "aaaa1111",
+  });
+  assert.equal(afterSingleRevert.headChanged, false);
+  assert.equal(afterSingleRevert.doc.topics.length, 1);
+  assert.equal(afterSingleRevert.doc.topics[0].files.length, 1);
+  assert.equal(afterSingleRevert.doc.overview?.text, "Adds retry jitter across poller and types.");
+  assert.equal(afterSingleRevert.doc.suggestedCommit?.subject, "feat(outbox): add retry jitter");
+  assert.equal(afterSingleRevert.doc.headSha, "aaaa1111");
+
+  // Committing one file changes HEAD, clearing stale overview & suggestedCommit and updating headSha
+  const afterHeadMove = pruneCleanStateInDocument(initial.text, new Set(["src/poller.ts"]), {
+    headSha: "bbbb2222",
+  });
+  assert.equal(afterHeadMove.headChanged, true);
+  assert.equal(afterHeadMove.doc.topics.length, 1);
+  assert.equal(afterHeadMove.doc.overview, null);
+  assert.equal(afterHeadMove.doc.suggestedCommit, null);
+  assert.equal(afterHeadMove.doc.headSha, "bbbb2222");
+
+  // Clean working tree clears headSha as well
+  const afterClean = pruneCleanStateInDocument(afterHeadMove.text, new Set(), {
+    headSha: "bbbb2222",
+  });
+  assert.equal(afterClean.doc.headSha, null);
+  assert.equal(afterClean.doc.topics.length, 0);
+});

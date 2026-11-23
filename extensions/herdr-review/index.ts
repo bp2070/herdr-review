@@ -64,6 +64,33 @@ function resolveTrackedGitTarget(rawPath: string, baseCwd: string): { repoRoot: 
   }
 }
 
+function hasDirtyFiles(repoRoot: string): boolean {
+  try {
+    const out = execFileSync(
+      "git",
+      [
+        "--no-optional-locks",
+        "-c",
+        "core.fsmonitor=false",
+        "-c",
+        "diff.autoRefreshIndex=false",
+        "status",
+        "--porcelain=v1",
+        "-z",
+        "--untracked-files=all",
+      ],
+      {
+        cwd: repoRoot,
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      },
+    );
+    return out.length > 0;
+  } catch {
+    return false;
+  }
+}
+
 const TopicFileSchema = Type.Object({
   filePath: Type.String({
     description: "Repository-relative or absolute path to a file belonging to this logical topic",
@@ -212,6 +239,7 @@ function detectAgentName(explicit?: string): string {
 
 export default function herdrGitReviewExtension(pi: ExtensionAPI) {
   const unattributedEdits = new Map<string, { repoRoot: string; filePath: string }>();
+  const touchedReposThisRun = new Set<string>();
   let updatedOverviewThisRun = false;
   let updatedSuggestedCommitThisRun = false;
   let remindedThisRun = false;
@@ -325,9 +353,19 @@ export default function herdrGitReviewExtension(pi: ExtensionAPI) {
       });
 
       const recordedPaths = saved.upserted.flatMap((t: any) => t.files.map((f: any) => f.filePath));
+      if (saved.repoRoot) touchedReposThisRun.add(saved.repoRoot);
       markTopicFilesRecorded(saved.repoRoot, recordedPaths);
-      if (params.overview) updatedOverviewThisRun = true;
-      if (params.suggestedCommit?.subject) updatedSuggestedCommitThisRun = true;
+      if (saved.doc.overview?.text) updatedOverviewThisRun = true;
+      if (saved.doc.suggestedCommit?.subject) updatedSuggestedCommitThisRun = true;
+
+      const missingMeta: string[] = [];
+      if (saved.doc.topics.length > 0) {
+        if (!saved.doc.overview?.text) missingMeta.push("`overview`");
+        if (!saved.doc.suggestedCommit?.subject) missingMeta.push("`suggestedCommit`");
+      }
+      const missingNote = missingMeta.length
+        ? ` Note: ${missingMeta.join(" and ")} ${missingMeta.length === 1 ? "is" : "are"} currently empty in Herdr Review—include ${missingMeta.length === 1 ? "it" : "them"} in \`record_change_topics\`.`
+        : "";
 
       const commitMsg = saved.doc.suggestedCommit?.subject
         ? ` | commit: "${saved.doc.suggestedCommit.subject}"`
@@ -336,7 +374,7 @@ export default function herdrGitReviewExtension(pi: ExtensionAPI) {
         content: [
           {
             type: "text",
-            text: `Recorded ${saved.upserted.length} topic(s) across ${recordedPaths.length} file entry/entries (${saved.doc.topics.length} total topics)${commitMsg}.`,
+            text: `Recorded ${saved.upserted.length} topic(s) across ${recordedPaths.length} file entry/entries (${saved.doc.topics.length} total topics)${commitMsg}.${missingNote}`,
           },
         ],
         details: {
@@ -476,6 +514,7 @@ export default function herdrGitReviewExtension(pi: ExtensionAPI) {
 
   pi.on("agent_start", async () => {
     unattributedEdits.clear();
+    touchedReposThisRun.clear();
     updatedOverviewThisRun = false;
     updatedSuggestedCommitThisRun = false;
     remindedThisRun = false;
@@ -503,6 +542,7 @@ export default function herdrGitReviewExtension(pi: ExtensionAPI) {
       if (typeof rawPath === "string") {
         const target = resolveTrackedGitTarget(rawPath, ctx.cwd);
         if (target) {
+          touchedReposThisRun.add(target.repoRoot);
           unattributedEdits.set(`${target.repoRoot.toLowerCase()}\0${target.filePath}`, target);
         }
       }
@@ -510,15 +550,56 @@ export default function herdrGitReviewExtension(pi: ExtensionAPI) {
   });
 
   pi.on("agent_before_settle", async (event) => {
-    if (remindedThisRun || unattributedEdits.size === 0) return;
-    remindedThisRun = true;
-    const files = [...unattributedEdits.values()].map((t) => t.filePath);
-    unattributedEdits.clear();
+    if (remindedThisRun) return;
 
-    const extras: string[] = [];
-    if (!updatedOverviewThisRun) extras.push("a high-level `overview`");
-    if (!updatedSuggestedCommitThisRun) extras.push("an up-to-date `suggestedCommit` (`{ subject, body? }`)");
-    const extraText = extras.length ? `, along with ${extras.join(" and ")}` : "";
+    if (unattributedEdits.size > 0) {
+      remindedThisRun = true;
+      const files = [...unattributedEdits.values()].map((t) => t.filePath);
+      unattributedEdits.clear();
+      touchedReposThisRun.clear();
+
+      const extras: string[] = [];
+      if (!updatedOverviewThisRun) extras.push("a high-level `overview`");
+      if (!updatedSuggestedCommitThisRun) extras.push("an up-to-date `suggestedCommit` (`{ subject, body? }`)");
+      const extraText = extras.length ? `, along with ${extras.join(" and ")}` : "";
+
+      return {
+        entries: [
+          ...event.entries,
+          {
+            type: "custom_message",
+            customType: "herdr-git-review-reminder",
+            content: `You modified repository file(s) not yet grouped in Herdr Review: ${files.join(", ")}. Call \`record_change_topics\` to group them by logical intent${extraText}, then conclude briefly.`,
+            display: false,
+          },
+        ],
+        continue: true,
+      };
+    }
+
+    if (touchedReposThisRun.size === 0) return;
+
+    let missingOverview = false;
+    let missingCommit = false;
+    for (const repoRoot of touchedReposThisRun) {
+      if (!hasDirtyFiles(repoRoot)) continue;
+      try {
+        const state = runCliJson(["list", "--cwd", repoRoot, "--json"]);
+        if (!state.doc?.overview?.text) missingOverview = true;
+        if (!state.doc?.suggestedCommit?.subject) missingCommit = true;
+      } catch {
+        // Ignore non-git or transient CLI errors
+      }
+    }
+
+    if (!missingOverview && !missingCommit) return;
+
+    remindedThisRun = true;
+    touchedReposThisRun.clear();
+
+    const missingParts: string[] = [];
+    if (missingOverview) missingParts.push("a high-level `overview`");
+    if (missingCommit) missingParts.push("an up-to-date `suggestedCommit` (`{ subject, body? }`)");
 
     return {
       entries: [
@@ -526,7 +607,7 @@ export default function herdrGitReviewExtension(pi: ExtensionAPI) {
         {
           type: "custom_message",
           customType: "herdr-git-review-reminder",
-          content: `You modified repository file(s) not yet grouped in Herdr Review: ${files.join(", ")}. Call \`record_change_topics\` to group them by logical intent${extraText}, then conclude briefly.`,
+          content: `Herdr Review is missing ${missingParts.join(" and ")} for the active uncommitted changes. Call \`record_change_topics\` to populate ${missingParts.length === 1 ? "it" : "them"}, then conclude briefly.`,
           display: false,
         },
       ],

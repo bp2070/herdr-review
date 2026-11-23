@@ -130,6 +130,19 @@ async function writeAtomic(filePath, content) {
   }
 }
 
+function readHeadSha(repoRoot) {
+  try {
+    const out = execFileSync("git", [...GIT_READ_ARGS, "rev-parse", "HEAD"], {
+      cwd: repoRoot,
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return out || null;
+  } catch {
+    return null;
+  }
+}
+
 function readDirtyPathsSet(repoRoot) {
   try {
     const statusOut = execFileSync(
@@ -152,20 +165,26 @@ export async function readReviewState({ cwd = process.cwd() } = {}) {
   }
   const parsedDoc = parseReviewDocument(raw);
   const dirtyPaths = readDirtyPathsSet(repoRoot);
+  const headSha = readHeadSha(repoRoot);
   if (dirtyPaths) {
+    const headChanged = Boolean(headSha && parsedDoc.headSha && headSha !== parsedDoc.headSha);
     const hasCleanTopicFiles = parsedDoc.topics.some((t) =>
       t.files.some((f) => !dirtyPaths.has(f.filePath)),
     );
     const hasStaleEmptyState =
       dirtyPaths.size === 0 &&
       Boolean(
-        parsedDoc.overview ||
+        parsedDoc.headSha ||
+          parsedDoc.overview ||
           parsedDoc.suggestedCommit ||
           parsedDoc.topics.length > 0 ||
           parsedDoc.threads.some((t) => t.status === "resolved"),
       );
-    if (hasCleanTopicFiles || hasStaleEmptyState) {
-      const pruned = pruneCleanStateInDocument(raw, dirtyPaths, { dropResolvedThreads: true });
+    if (headChanged || hasCleanTopicFiles || hasStaleEmptyState) {
+      const pruned = pruneCleanStateInDocument(raw, dirtyPaths, {
+        dropResolvedThreads: true,
+        headSha,
+      });
       await writeAtomic(reviewFile, pruned.text).catch(() => {});
       return { repoRoot, gitDir, reviewFile, doc: pruned.doc };
     }
@@ -183,11 +202,15 @@ export async function upsertReviewTopics({
   autoHunk = true,
 } = {}) {
   const { repoRoot, reviewFile } = resolveGitPaths(cwd);
+  const headSha = readHeadSha(repoRoot);
   let current = await readTextIfExists(reviewFile);
   if (current.trim() && !replaceAll) {
     const dirtyPaths = readDirtyPathsSet(repoRoot);
     if (dirtyPaths) {
-      current = pruneCleanStateInDocument(current, dirtyPaths, { dropResolvedThreads: true }).text;
+      current = pruneCleanStateInDocument(current, dirtyPaths, {
+        dropResolvedThreads: true,
+        headSha,
+      }).text;
     }
   }
 
@@ -233,6 +256,7 @@ export async function upsertReviewTopics({
     topics: normalizedIncoming,
     overview: overviewInput,
     suggestedCommit: commitInput,
+    headSha,
     replaceAll,
     nowIso: new Date().toISOString(),
     createId: () => `tpc-${randomUUID().slice(0, 8)}`,
@@ -329,7 +353,11 @@ export async function pruneOrClearReviewState({ cwd = process.cwd(), pruneClean 
   );
   const parsed = parsePorcelainStatusZ(statusOut, 10000);
   const dirtyPaths = new Set(parsed.entries.map((e) => e.path));
-  const result = pruneCleanStateInDocument(current, dirtyPaths, { dropResolvedThreads: true });
+  const headSha = readHeadSha(repoRoot);
+  const result = pruneCleanStateInDocument(current, dirtyPaths, {
+    dropResolvedThreads: true,
+    headSha,
+  });
   await writeAtomic(reviewFile, result.text);
   return {
     repoRoot,

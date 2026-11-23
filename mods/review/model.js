@@ -698,9 +698,15 @@ export function normalizeSuggestedCommit(raw) {
   };
 }
 
+function normalizeHeadSha(raw) {
+  const sha = String(raw ?? "").trim();
+  return sha || null;
+}
+
 export function emptyReviewDocument() {
   return {
     version: 2,
+    headSha: null,
     overview: null,
     suggestedCommit: null,
     topics: [],
@@ -737,6 +743,7 @@ export function parseReviewDocument(jsonText) {
 
     return {
       version: 2,
+      headSha: normalizeHeadSha(parsed?.headSha),
       overview: normalizeOverview(parsed?.overview),
       suggestedCommit: normalizeSuggestedCommit(parsed?.suggestedCommit),
       topics,
@@ -758,6 +765,7 @@ export function upsertTopicsInDocument(
     topics: incomingTopics = [],
     overview = undefined,
     suggestedCommit = undefined,
+    headSha = undefined,
     replaceAll = false,
     nowIso = new Date().toISOString(),
     createId = () => `tpc-${Date.now()}`,
@@ -814,8 +822,11 @@ export function upsertTopicsInDocument(
     );
   }
 
+  const nextHeadSha = headSha !== undefined ? normalizeHeadSha(headSha) : doc.headSha;
+
   const nextDoc = {
     version: 2,
+    headSha: nextHeadSha,
     overview: nextOverview,
     suggestedCommit: nextCommit,
     topics: baseList,
@@ -972,17 +983,15 @@ export function promoteDraftThreadsToOpen(docText, nowIso = new Date().toISOStri
 export function pruneCleanStateInDocument(
   docText,
   dirtyPathsSet,
-  { dropResolvedThreads = true, resetSummary = false } = {},
+  { dropResolvedThreads = true, resetSummary = false, headSha = undefined } = {},
 ) {
   const doc = parseReviewDocument(docText);
   const keep = dirtyPathsSet instanceof Set ? dirtyPathsSet : new Set(dirtyPathsSet ?? []);
 
   const topics = [];
   let removedTopics = 0;
-  let removedTopicFiles = 0;
   for (const t of doc.topics) {
     const remainingFiles = t.files.filter((f) => keep.has(f.filePath));
-    removedTopicFiles += t.files.length - remainingFiles.length;
     if (remainingFiles.length > 0) {
       topics.push({ ...t, files: remainingFiles });
     } else {
@@ -996,21 +1005,26 @@ export function pruneCleanStateInDocument(
     return true;
   });
 
+  const incomingHeadSha = headSha !== undefined ? normalizeHeadSha(headSha) : null;
+  const headChanged = Boolean(incomingHeadSha && doc.headSha && incomingHeadSha !== doc.headSha);
+
   const clearSummary =
     resetSummary ||
+    headChanged ||
     keep.size === 0 ||
     removedTopics > 0 ||
-    removedTopicFiles > 0 ||
     (doc.topics.length > 0 && topics.length === 0);
 
   const nextDoc = {
     version: 2,
+    headSha: keep.size === 0 ? null : (incomingHeadSha ?? doc.headSha),
     overview: clearSummary ? null : doc.overview,
     suggestedCommit: clearSummary ? null : doc.suggestedCommit,
     topics,
     threads,
   };
   return {
+    headChanged,
     removedTopics,
     removedThreads: doc.threads.length - threads.length,
     doc: nextDoc,
